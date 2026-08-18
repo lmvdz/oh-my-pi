@@ -1,0 +1,136 @@
+{
+	"branchCallsExamined": 18,
+	"byteIdenticalPrefix": 18,
+	"fraction": 1,
+	"appendedMessagesHistogram": {
+		"1": 18
+	},
+	"rows": [
+		{
+			"scenario": "baseline",
+			"branchIndex": 0,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "two-tool-calls-one-stream",
+			"branchIndex": 0,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "branch-returns-no-units",
+			"branchIndex": 0,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "branch-over-unit-cap",
+			"branchIndex": 0,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "atoms-restricted",
+			"branchIndex": 0,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "branch-hangs",
+			"branchIndex": 0,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "branch-past-grace",
+			"branchIndex": 0,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "branch-count-2",
+			"branchIndex": 0,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "branch-count-2",
+			"branchIndex": 1,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "branch-count-4",
+			"branchIndex": 0,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "branch-count-4",
+			"branchIndex": 1,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "branch-count-4",
+			"branchIndex": 2,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "branch-count-4",
+			"branchIndex": 3,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "delivery-calls-2",
+			"branchIndex": 0,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "delivery-calls-2",
+			"branchIndex": 1,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 1106
+		},
+		{
+			"scenario": "three-turn-session",
+			"branchIndex": 0,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 83
+		},
+		{
+			"scenario": "three-turn-session",
+			"branchIndex": 1,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 472
+		},
+		{
+			"scenario": "three-turn-session",
+			"branchIndex": 2,
+			"exactPrefix": true,
+			"appendedMessages": 1,
+			"sharedPrefixBytes": 871
+		}
+	]
+}

@@ -1,0 +1,326 @@
+[
+	{
+		"turnHoldMs": 0,
+		"branchDelayMs": 100,
+		"turnMs": 26.47,
+		"forks": 1,
+		"harvests": 0,
+		"unitsHarvested": 0,
+		"foldDelivered": false,
+		"terminations": {
+			"completed": 0,
+			"unit-cap": 0,
+			"cancelled": 1,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {
+			"no-units": 1
+		},
+		"branchTokensBilled": 0,
+		"undercountBoundTokens": 2048
+	},
+	{
+		"turnHoldMs": 0,
+		"branchDelayMs": 500,
+		"turnMs": 27.22,
+		"forks": 1,
+		"harvests": 0,
+		"unitsHarvested": 0,
+		"foldDelivered": false,
+		"terminations": {
+			"completed": 0,
+			"unit-cap": 0,
+			"cancelled": 1,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {
+			"no-units": 1
+		},
+		"branchTokensBilled": 0,
+		"undercountBoundTokens": 2048
+	},
+	{
+		"turnHoldMs": 0,
+		"branchDelayMs": 2000,
+		"turnMs": 33.67,
+		"forks": 1,
+		"harvests": 0,
+		"unitsHarvested": 0,
+		"foldDelivered": false,
+		"terminations": {
+			"completed": 0,
+			"unit-cap": 0,
+			"cancelled": 1,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {
+			"no-units": 1
+		},
+		"branchTokensBilled": 0,
+		"undercountBoundTokens": 2048
+	},
+	{
+		"turnHoldMs": 0,
+		"branchDelayMs": 5000,
+		"turnMs": 38.58,
+		"forks": 1,
+		"harvests": 0,
+		"unitsHarvested": 0,
+		"foldDelivered": false,
+		"terminations": {
+			"completed": 0,
+			"unit-cap": 0,
+			"cancelled": 1,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {
+			"no-units": 1
+		},
+		"branchTokensBilled": 0,
+		"undercountBoundTokens": 2048
+	},
+	{
+		"turnHoldMs": 250,
+		"branchDelayMs": 100,
+		"turnMs": 301.05,
+		"forks": 1,
+		"harvests": 1,
+		"unitsHarvested": 2,
+		"foldDelivered": true,
+		"terminations": {
+			"completed": 1,
+			"unit-cap": 0,
+			"cancelled": 0,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {},
+		"branchTokensBilled": 1140,
+		"undercountBoundTokens": 0
+	},
+	{
+		"turnHoldMs": 250,
+		"branchDelayMs": 500,
+		"turnMs": 302.58,
+		"forks": 1,
+		"harvests": 0,
+		"unitsHarvested": 0,
+		"foldDelivered": false,
+		"terminations": {
+			"completed": 0,
+			"unit-cap": 0,
+			"cancelled": 1,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {
+			"no-units": 1
+		},
+		"branchTokensBilled": 0,
+		"undercountBoundTokens": 2048
+	},
+	{
+		"turnHoldMs": 250,
+		"branchDelayMs": 2000,
+		"turnMs": 311.99,
+		"forks": 1,
+		"harvests": 0,
+		"unitsHarvested": 0,
+		"foldDelivered": false,
+		"terminations": {
+			"completed": 0,
+			"unit-cap": 0,
+			"cancelled": 1,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {
+			"no-units": 1
+		},
+		"branchTokensBilled": 0,
+		"undercountBoundTokens": 2048
+	},
+	{
+		"turnHoldMs": 250,
+		"branchDelayMs": 5000,
+		"turnMs": 303.2,
+		"forks": 1,
+		"harvests": 0,
+		"unitsHarvested": 0,
+		"foldDelivered": false,
+		"terminations": {
+			"completed": 0,
+			"unit-cap": 0,
+			"cancelled": 1,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {
+			"no-units": 1
+		},
+		"branchTokensBilled": 0,
+		"undercountBoundTokens": 2048
+	},
+	{
+		"turnHoldMs": 1000,
+		"branchDelayMs": 100,
+		"turnMs": 1046.56,
+		"forks": 1,
+		"harvests": 1,
+		"unitsHarvested": 2,
+		"foldDelivered": true,
+		"terminations": {
+			"completed": 1,
+			"unit-cap": 0,
+			"cancelled": 0,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {},
+		"branchTokensBilled": 1140,
+		"undercountBoundTokens": 0
+	},
+	{
+		"turnHoldMs": 1000,
+		"branchDelayMs": 500,
+		"turnMs": 1053.17,
+		"forks": 1,
+		"harvests": 1,
+		"unitsHarvested": 2,
+		"foldDelivered": true,
+		"terminations": {
+			"completed": 1,
+			"unit-cap": 0,
+			"cancelled": 0,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {},
+		"branchTokensBilled": 1140,
+		"undercountBoundTokens": 0
+	},
+	{
+		"turnHoldMs": 1000,
+		"branchDelayMs": 2000,
+		"turnMs": 1048.57,
+		"forks": 1,
+		"harvests": 0,
+		"unitsHarvested": 0,
+		"foldDelivered": false,
+		"terminations": {
+			"completed": 0,
+			"unit-cap": 0,
+			"cancelled": 1,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {
+			"no-units": 1
+		},
+		"branchTokensBilled": 0,
+		"undercountBoundTokens": 2048
+	},
+	{
+		"turnHoldMs": 1000,
+		"branchDelayMs": 5000,
+		"turnMs": 1049.32,
+		"forks": 1,
+		"harvests": 0,
+		"unitsHarvested": 0,
+		"foldDelivered": false,
+		"terminations": {
+			"completed": 0,
+			"unit-cap": 0,
+			"cancelled": 1,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {
+			"no-units": 1
+		},
+		"branchTokensBilled": 0,
+		"undercountBoundTokens": 2048
+	},
+	{
+		"turnHoldMs": 3000,
+		"branchDelayMs": 100,
+		"turnMs": 3050.19,
+		"forks": 1,
+		"harvests": 1,
+		"unitsHarvested": 2,
+		"foldDelivered": true,
+		"terminations": {
+			"completed": 1,
+			"unit-cap": 0,
+			"cancelled": 0,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {},
+		"branchTokensBilled": 1140,
+		"undercountBoundTokens": 0
+	},
+	{
+		"turnHoldMs": 3000,
+		"branchDelayMs": 500,
+		"turnMs": 3050.57,
+		"forks": 1,
+		"harvests": 1,
+		"unitsHarvested": 2,
+		"foldDelivered": true,
+		"terminations": {
+			"completed": 1,
+			"unit-cap": 0,
+			"cancelled": 0,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {},
+		"branchTokensBilled": 1140,
+		"undercountBoundTokens": 0
+	},
+	{
+		"turnHoldMs": 3000,
+		"branchDelayMs": 2000,
+		"turnMs": 3051.2,
+		"forks": 1,
+		"harvests": 1,
+		"unitsHarvested": 2,
+		"foldDelivered": true,
+		"terminations": {
+			"completed": 1,
+			"unit-cap": 0,
+			"cancelled": 0,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {},
+		"branchTokensBilled": 1140,
+		"undercountBoundTokens": 0
+	},
+	{
+		"turnHoldMs": 3000,
+		"branchDelayMs": 5000,
+		"turnMs": 3048.32,
+		"forks": 1,
+		"harvests": 0,
+		"unitsHarvested": 0,
+		"foldDelivered": false,
+		"terminations": {
+			"completed": 0,
+			"unit-cap": 0,
+			"cancelled": 1,
+			"error": 0,
+			"tool-use-leak": 0
+		},
+		"drops": {
+			"no-units": 1
+		},
+		"branchTokensBilled": 0,
+		"undercountBoundTokens": 2048
+	}
+]

@@ -1,0 +1,32 @@
+{
+	"mainCalls": 4,
+	"branchCalls": 2,
+	"perCall": [
+		{
+			"callIndex": 0,
+			"foldMessages": 0,
+			"foldIsFinalMessage": null,
+			"foldRole": null
+		},
+		{
+			"callIndex": 1,
+			"foldMessages": 1,
+			"foldIsFinalMessage": true,
+			"foldRole": "user"
+		},
+		{
+			"callIndex": 2,
+			"foldMessages": 1,
+			"foldIsFinalMessage": true,
+			"foldRole": "user"
+		},
+		{
+			"callIndex": 3,
+			"foldMessages": 0,
+			"foldIsFinalMessage": null,
+			"foldRole": null
+		}
+	],
+	"foldsThatBecameConversationMessages": 0,
+	"customDiagnosticEntries": 4
+}

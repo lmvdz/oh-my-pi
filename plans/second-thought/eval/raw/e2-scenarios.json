@@ -1,0 +1,681 @@
+[
+	{
+		"id": "baseline",
+		"expect": "one fork, one branch, one harvest, 2 units",
+		"mainCalls": 2,
+		"branchCalls": 1,
+		"callsWithFold": [
+			1
+		],
+		"runtimePresent": true,
+		"report": {
+			"forks": 1,
+			"branches": 1,
+			"harvests": 1,
+			"unitsHarvested": 2,
+			"tokens": {
+				"uncachedInput": 200,
+				"cacheRead": 900,
+				"cacheWrite": 0,
+				"output": 40,
+				"totalTokens": 1140
+			},
+			"costUsd": {
+				"input": 0.0006000000000000001,
+				"output": 0.0006000000000000001,
+				"cacheRead": 0.00027,
+				"cacheWrite": 0,
+				"total": 0.0014700000000000002
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {},
+			"drops": {},
+			"terminations": {
+				"completed": 1,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": 1,
+		"unitsPerHarvest": 2
+	},
+	{
+		"id": "no-tool-call",
+		"expect": "no fork at all — nothing to fork at",
+		"mainCalls": 1,
+		"branchCalls": 0,
+		"callsWithFold": [],
+		"runtimePresent": true,
+		"report": {
+			"forks": 0,
+			"branches": 0,
+			"harvests": 0,
+			"unitsHarvested": 0,
+			"tokens": {
+				"uncachedInput": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"output": 0,
+				"totalTokens": 0
+			},
+			"costUsd": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"total": 0
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {},
+			"drops": {},
+			"terminations": {
+				"completed": 0,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": null,
+		"unitsPerHarvest": null
+	},
+	{
+		"id": "two-tool-calls-one-stream",
+		"expect": "one fork per stream, not per tool call",
+		"mainCalls": 2,
+		"branchCalls": 1,
+		"callsWithFold": [
+			1
+		],
+		"runtimePresent": true,
+		"report": {
+			"forks": 1,
+			"branches": 1,
+			"harvests": 1,
+			"unitsHarvested": 2,
+			"tokens": {
+				"uncachedInput": 200,
+				"cacheRead": 900,
+				"cacheWrite": 0,
+				"output": 40,
+				"totalTokens": 1140
+			},
+			"costUsd": {
+				"input": 0.0006000000000000001,
+				"output": 0.0006000000000000001,
+				"cacheRead": 0.00027,
+				"cacheWrite": 0,
+				"total": 0.0014700000000000002
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {},
+			"drops": {},
+			"terminations": {
+				"completed": 1,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": 1,
+		"unitsPerHarvest": 2
+	},
+	{
+		"id": "conditioning-too-short",
+		"expect": "skip: conditioning-too-short",
+		"mainCalls": 2,
+		"branchCalls": 0,
+		"callsWithFold": [],
+		"runtimePresent": true,
+		"report": {
+			"forks": 0,
+			"branches": 0,
+			"harvests": 0,
+			"unitsHarvested": 0,
+			"tokens": {
+				"uncachedInput": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"output": 0,
+				"totalTokens": 0
+			},
+			"costUsd": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"total": 0
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {
+				"conditioning-too-short": 1
+			},
+			"drops": {},
+			"terminations": {
+				"completed": 0,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": null,
+		"unitsPerHarvest": null
+	},
+	{
+		"id": "context-too-large",
+		"expect": "skip: context-too-large",
+		"mainCalls": 2,
+		"branchCalls": 0,
+		"callsWithFold": [],
+		"runtimePresent": true,
+		"report": {
+			"forks": 0,
+			"branches": 0,
+			"harvests": 0,
+			"unitsHarvested": 0,
+			"tokens": {
+				"uncachedInput": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"output": 0,
+				"totalTokens": 0
+			},
+			"costUsd": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"total": 0
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {
+				"context-too-large": 1
+			},
+			"drops": {},
+			"terminations": {
+				"completed": 0,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": null,
+		"unitsPerHarvest": null
+	},
+	{
+		"id": "disabled",
+		"expect": "no runtime at all",
+		"mainCalls": 2,
+		"branchCalls": 0,
+		"callsWithFold": [],
+		"runtimePresent": false,
+		"report": null,
+		"harvestRate": null,
+		"unitsPerHarvest": null
+	},
+	{
+		"id": "sub-session",
+		"expect": "no runtime — subagents never fork",
+		"mainCalls": 2,
+		"branchCalls": 0,
+		"callsWithFold": [],
+		"runtimePresent": false,
+		"report": null,
+		"harvestRate": null,
+		"unitsPerHarvest": null
+	},
+	{
+		"id": "non-anthropic-primary",
+		"expect": "no fork — the gate requires an anthropic-messages primary",
+		"mainCalls": 2,
+		"branchCalls": 0,
+		"callsWithFold": [],
+		"runtimePresent": true,
+		"report": {
+			"forks": 0,
+			"branches": 0,
+			"harvests": 0,
+			"unitsHarvested": 0,
+			"tokens": {
+				"uncachedInput": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"output": 0,
+				"totalTokens": 0
+			},
+			"costUsd": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"total": 0
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {
+				"primary-model-not-anthropic": 1
+			},
+			"drops": {},
+			"terminations": {
+				"completed": 0,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": null,
+		"unitsPerHarvest": null
+	},
+	{
+		"id": "no-side-stream-fn",
+		"expect": "no runtime — a bare host cannot fork",
+		"mainCalls": 2,
+		"branchCalls": 0,
+		"callsWithFold": [],
+		"runtimePresent": false,
+		"report": null,
+		"harvestRate": null,
+		"unitsPerHarvest": null
+	},
+	{
+		"id": "branch-returns-no-units",
+		"expect": "drop: no-units",
+		"mainCalls": 2,
+		"branchCalls": 1,
+		"callsWithFold": [],
+		"runtimePresent": true,
+		"report": {
+			"forks": 1,
+			"branches": 1,
+			"harvests": 0,
+			"unitsHarvested": 0,
+			"tokens": {
+				"uncachedInput": 200,
+				"cacheRead": 900,
+				"cacheWrite": 0,
+				"output": 40,
+				"totalTokens": 1140
+			},
+			"costUsd": {
+				"input": 0.0006000000000000001,
+				"output": 0.0006000000000000001,
+				"cacheRead": 0.00027,
+				"cacheWrite": 0,
+				"total": 0.0014700000000000002
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {},
+			"drops": {
+				"no-units": 1
+			},
+			"terminations": {
+				"completed": 1,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": 0,
+		"unitsPerHarvest": null
+	},
+	{
+		"id": "branch-over-unit-cap",
+		"expect": "harvest capped at harvestCapPerAtom per atom",
+		"mainCalls": 2,
+		"branchCalls": 1,
+		"callsWithFold": [
+			1
+		],
+		"runtimePresent": true,
+		"report": {
+			"forks": 1,
+			"branches": 1,
+			"harvests": 1,
+			"unitsHarvested": 5,
+			"tokens": {
+				"uncachedInput": 200,
+				"cacheRead": 900,
+				"cacheWrite": 0,
+				"output": 40,
+				"totalTokens": 1140
+			},
+			"costUsd": {
+				"input": 0.0006000000000000001,
+				"output": 0.0006000000000000001,
+				"cacheRead": 0.00027,
+				"cacheWrite": 0,
+				"total": 0.0014700000000000002
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {},
+			"drops": {},
+			"terminations": {
+				"completed": 0,
+				"unit-cap": 1,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": 1,
+		"unitsPerHarvest": 5
+	},
+	{
+		"id": "atoms-restricted",
+		"expect": "only the configured atoms survive the harvest filter",
+		"mainCalls": 2,
+		"branchCalls": 1,
+		"callsWithFold": [
+			1
+		],
+		"runtimePresent": true,
+		"report": {
+			"forks": 1,
+			"branches": 1,
+			"harvests": 1,
+			"unitsHarvested": 2,
+			"tokens": {
+				"uncachedInput": 200,
+				"cacheRead": 900,
+				"cacheWrite": 0,
+				"output": 40,
+				"totalTokens": 1140
+			},
+			"costUsd": {
+				"input": 0.0006000000000000001,
+				"output": 0.0006000000000000001,
+				"cacheRead": 0.00027,
+				"cacheWrite": 0,
+				"total": 0.0014700000000000002
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {},
+			"drops": {},
+			"terminations": {
+				"completed": 1,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": 1,
+		"unitsPerHarvest": 2
+	},
+	{
+		"id": "branch-hangs",
+		"expect": "termination: cancelled, drop: no-settled-branches",
+		"mainCalls": 2,
+		"branchCalls": 1,
+		"callsWithFold": [],
+		"runtimePresent": true,
+		"report": {
+			"forks": 1,
+			"branches": 1,
+			"harvests": 0,
+			"unitsHarvested": 0,
+			"tokens": {
+				"uncachedInput": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"output": 0,
+				"totalTokens": 0
+			},
+			"costUsd": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"total": 0
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 1,
+			"skips": {},
+			"drops": {
+				"no-units": 1
+			},
+			"terminations": {
+				"completed": 0,
+				"unit-cap": 0,
+				"cancelled": 1,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": 0,
+		"unitsPerHarvest": null
+	},
+	{
+		"id": "branch-past-grace",
+		"expect": "600ms settle exceeds the 300ms grace",
+		"mainCalls": 2,
+		"branchCalls": 1,
+		"callsWithFold": [],
+		"runtimePresent": true,
+		"report": {
+			"forks": 1,
+			"branches": 1,
+			"harvests": 0,
+			"unitsHarvested": 0,
+			"tokens": {
+				"uncachedInput": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"output": 0,
+				"totalTokens": 0
+			},
+			"costUsd": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"total": 0
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 1,
+			"skips": {},
+			"drops": {
+				"no-units": 1
+			},
+			"terminations": {
+				"completed": 0,
+				"unit-cap": 0,
+				"cancelled": 1,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": 0,
+		"unitsPerHarvest": null
+	},
+	{
+		"id": "branch-count-2",
+		"expect": "two branches per fork",
+		"mainCalls": 2,
+		"branchCalls": 2,
+		"callsWithFold": [
+			1
+		],
+		"runtimePresent": true,
+		"report": {
+			"forks": 1,
+			"branches": 2,
+			"harvests": 1,
+			"unitsHarvested": 4,
+			"tokens": {
+				"uncachedInput": 400,
+				"cacheRead": 1800,
+				"cacheWrite": 0,
+				"output": 80,
+				"totalTokens": 2280
+			},
+			"costUsd": {
+				"input": 0.0012000000000000001,
+				"output": 0.0012000000000000001,
+				"cacheRead": 0.00054,
+				"cacheWrite": 0,
+				"total": 0.0029400000000000003
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {},
+			"drops": {},
+			"terminations": {
+				"completed": 2,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": 1,
+		"unitsPerHarvest": 4
+	},
+	{
+		"id": "branch-count-4",
+		"expect": "four branches per fork",
+		"mainCalls": 2,
+		"branchCalls": 4,
+		"callsWithFold": [
+			1
+		],
+		"runtimePresent": true,
+		"report": {
+			"forks": 1,
+			"branches": 4,
+			"harvests": 1,
+			"unitsHarvested": 8,
+			"tokens": {
+				"uncachedInput": 800,
+				"cacheRead": 3600,
+				"cacheWrite": 0,
+				"output": 160,
+				"totalTokens": 4560
+			},
+			"costUsd": {
+				"input": 0.0024000000000000002,
+				"output": 0.0024000000000000002,
+				"cacheRead": 0.00108,
+				"cacheWrite": 0,
+				"total": 0.005880000000000001
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {},
+			"drops": {},
+			"terminations": {
+				"completed": 4,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": 1,
+		"unitsPerHarvest": 8
+	},
+	{
+		"id": "delivery-calls-2",
+		"expect": "the fold rides two consecutive main calls",
+		"mainCalls": 3,
+		"branchCalls": 2,
+		"callsWithFold": [
+			1,
+			2
+		],
+		"runtimePresent": true,
+		"report": {
+			"forks": 2,
+			"branches": 2,
+			"harvests": 2,
+			"unitsHarvested": 4,
+			"tokens": {
+				"uncachedInput": 400,
+				"cacheRead": 1800,
+				"cacheWrite": 0,
+				"output": 80,
+				"totalTokens": 2280
+			},
+			"costUsd": {
+				"input": 0.0012000000000000001,
+				"output": 0.0012000000000000001,
+				"cacheRead": 0.00054,
+				"cacheWrite": 0,
+				"total": 0.0029400000000000003
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {},
+			"drops": {},
+			"terminations": {
+				"completed": 2,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": 1,
+		"unitsPerHarvest": 2
+	},
+	{
+		"id": "three-turn-session",
+		"expect": "one fork per turn across a multi-turn session",
+		"mainCalls": 6,
+		"branchCalls": 3,
+		"callsWithFold": [
+			1,
+			3,
+			5
+		],
+		"runtimePresent": true,
+		"report": {
+			"forks": 3,
+			"branches": 3,
+			"harvests": 3,
+			"unitsHarvested": 6,
+			"tokens": {
+				"uncachedInput": 600,
+				"cacheRead": 2700,
+				"cacheWrite": 0,
+				"output": 120,
+				"totalTokens": 3420
+			},
+			"costUsd": {
+				"input": 0.0018000000000000002,
+				"output": 0.0018000000000000002,
+				"cacheRead": 0.00081,
+				"cacheWrite": 0,
+				"total": 0.004410000000000001
+			},
+			"costIsIndicative": false,
+			"branchesWithoutUsage": 0,
+			"skips": {},
+			"drops": {},
+			"terminations": {
+				"completed": 3,
+				"unit-cap": 0,
+				"cancelled": 0,
+				"error": 0,
+				"tool-use-leak": 0
+			}
+		},
+		"harvestRate": 1,
+		"unitsPerHarvest": 2
+	}
+]
