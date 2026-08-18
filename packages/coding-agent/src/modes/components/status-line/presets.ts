@@ -2,7 +2,9 @@ import type { PresetDef, StatusLinePreset } from "./types";
 
 export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 	default: {
-		leftSegments: ["pi", "model", "mode", "collab", "path", "git", "pr", "context_pct", "cost"],
+		// `second_thought` renders nothing unless the feature is enabled AND a fold
+		// or skip has happened, so it costs a disabled session zero width.
+		leftSegments: ["pi", "model", "mode", "second_thought", "collab", "path", "git", "pr", "context_pct", "cost"],
 		rightSegments: ["session_name"],
 		separator: "powerline-thin",
 		segmentOptions: {
@@ -33,7 +35,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 	},
 
 	full: {
-		leftSegments: ["pi", "hostname", "model", "mode", "path", "git", "pr", "subagents"],
+		leftSegments: ["pi", "hostname", "model", "mode", "second_thought", "path", "git", "pr", "subagents"],
 		rightSegments: [
 			"session_name",
 			"cache_hit",
@@ -57,7 +59,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 
 	nerd: {
 		// Full preset with all Nerd Font icons
-		leftSegments: ["pi", "hostname", "model", "mode", "path", "git", "pr", "session", "subagents"],
+		leftSegments: ["pi", "hostname", "model", "mode", "second_thought", "path", "git", "pr", "session", "subagents"],
 		rightSegments: [
 			"session_name",
 			"token_in",
