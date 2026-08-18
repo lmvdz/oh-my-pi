@@ -29,7 +29,8 @@ export type ModelRole =
 	| "commit"
 	| "tiny"
 	| "task"
-	| "advisor";
+	| "advisor"
+	| "reflect";
 
 export interface ModelRoleInfo {
 	tag?: string;
@@ -50,6 +51,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 	tiny: { tag: "TINY", name: "Tiny", color: "dim" },
 	task: { tag: "TASK", name: "Subtask", color: "muted" },
 	advisor: { tag: "ADVISOR", name: "Advisor", color: "accent" },
+	reflect: { name: "Reflect", hidden: true },
 };
 
 export const MODEL_ROLE_IDS: ModelRole[] = [
@@ -63,6 +65,7 @@ export const MODEL_ROLE_IDS: ModelRole[] = [
 	"tiny",
 	"task",
 	"advisor",
+	"reflect",
 ];
 
 export type RoleInfo = ModelRoleInfo;
@@ -78,6 +81,7 @@ export function getKnownRoleIds(settings: Settings): string[] {
 	const roles = MODEL_ROLE_IDS.filter(role => !MODEL_ROLES[role as ModelRole]?.hidden) as string[];
 	const seen = new Set<string>(roles);
 	const addRole = (role: string) => {
+		if (role in MODEL_ROLES && MODEL_ROLES[role as ModelRole].hidden) return;
 		if (seen.has(role)) return;
 		seen.add(role);
 		roles.push(role);
