@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+venv/
+
+.env
+
+# Generated task subsets and run outputs — not checked in.
+benchmarks/data/
+logs/
+runs/
+*.bak
+*.bak_*
