@@ -172,5 +172,6 @@ describe("Second Thought settings", () => {
 		const branchCount = Settings.isolated({ "secondThought.branchCount": 5 }).get("secondThought.branchCount");
 
 		expect(branchCount).toBe(4);
+		expect(Settings.isolated({ "secondThought.branchCount": 0 }).get("secondThought.branchCount")).toBe(1);
 	});
 });
