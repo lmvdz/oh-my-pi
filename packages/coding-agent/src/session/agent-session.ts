@@ -8302,6 +8302,13 @@ export class AgentSession {
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
 			}
 			this.#clearSessionScopedToolState();
+			// Second Thought lifecycle is reset UNCONDITIONALLY once the branch
+			// session has committed — even when an extension returns
+			// skipConversationRestore (which only governs message restoration): a
+			// live fork or pending fold must never survive into the new session
+			// (issue #10 gauntlet r2). Idempotent; the conditional block below no
+			// longer owns it.
+			this.#secondThought?.reset();
 			this.#rehydrateCheckpointRewindState();
 			this.#todo.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
@@ -8324,7 +8331,6 @@ export class AgentSession {
 			if (!skipConversationRestore) {
 				this.agent.replaceMessages(sessionContext.messages);
 				this.#advisors.resetSessionState();
-				this.#secondThought?.reset();
 				this.#closeCodexProviderSessionsForHistoryRewrite();
 			}
 
@@ -8332,6 +8338,10 @@ export class AgentSession {
 			advisorRecordersDetached = false;
 			return { selectedText, selectedImages, cancelled: false };
 		} finally {
+			// Mirror for exceptions between the transition commit and the inline
+			// reset above (e.g. a throwing session_branch handler): a committed
+			// transition must never leave Second Thought state alive. Idempotent.
+			if (sessionTransitioned) this.#secondThought?.reset();
 			if (advisorRecordersDetached) {
 				if (sessionTransitioned) this.#advisors.resetSessionState();
 				else this.#advisors.reattachRecorderFeeds();

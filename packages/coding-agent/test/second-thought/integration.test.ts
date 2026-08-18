@@ -362,6 +362,8 @@ async function createHarness(args: {
 	 * transform there is no boundary for the fold to cross.
 	 */
 	obfuscator?: SecretObfuscator;
+	/** Stub extension runner (e.g. a session_before_branch handler returning skipConversationRestore). */
+	extensionRunner?: unknown;
 }): Promise<Harness> {
 	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 	if (!model) throw new Error("Expected the bundled anthropic model to exist");
@@ -402,6 +404,7 @@ async function createHarness(args: {
 		agentKind: args.agentKind,
 		toolRegistry: new Map<string, AgentTool>([[PROBE_TOOL.name, PROBE_TOOL]]),
 		...(obfuscator ? { obfuscator } : {}),
+		...(args.extensionRunner ? { extensionRunner: args.extensionRunner as never } : {}),
 		...(args.withoutSideStreamFn ? {} : { sideStreamFn: script.streamFn }),
 	});
 	openSessions.push(session);
@@ -818,6 +821,62 @@ describe("Second Thought end to end", () => {
 		await session.branch((target as { id: string }).id);
 
 		expect(runtime.historyEpoch).toBeGreaterThan(epochBefore);
+		expect(runtime.hasPendingFold).toBe(false);
+
+		const callsBefore = script.mainCalls().length;
+		await session.prompt("different path");
+		for (const call of script.mainCalls().slice(callsBefore)) {
+			expect(foldMessages(call.context)).toHaveLength(0);
+		}
+	});
+
+	it("resets even when an extension skips conversation restore on branch", async () => {
+		// skipConversationRestore governs MESSAGE restoration only — runtime
+		// lifecycle cleanup must be unconditional once the branch session has
+		// committed (issue #10 gauntlet r2, codex finding).
+		const extensionRunner = {
+			hasHandlers: (eventType: string) => eventType === "session_before_branch",
+			emit: async (event: { type: string }) =>
+				event.type === "session_before_branch" ? { skipConversationRestore: true } : undefined,
+			emitBeforeAgentStart: async () => undefined,
+			emitContext: async (messages: unknown) => messages,
+		};
+		const { session, script } = await createHarness({
+			script: {
+				turns: [{ thinking: THINKING, toolCall: { name: "probe", args: {} } }, { text: "done" }, { text: "fresh" }],
+				branchText: REFLECT_TEXT,
+			},
+			settings: { "secondThought.deliveryCalls": 4 },
+			extensionRunner,
+		});
+		const runtime = session.secondThought!;
+
+		await session.prompt("fix the failing test");
+
+		// Plant a pending fold AFTER the run (onRunEnd retires naturally-harvested
+		// folds, which would make this assertion vacuous otherwise). On the
+		// skip-restore path replaceMessages never runs, so the history epoch does
+		// NOT move — only the unconditional reset stands between this fold and
+		// delivery into the new session.
+		runtime.folds.accept({
+			generation: 999,
+			epoch: runtime.historyEpoch,
+			forkedAt: Date.now(),
+			harvestedAt: Date.now(),
+			windowMs: 100,
+			units: [{ atom: "check", text: "planted unit" }],
+			unitsByAtom: { check: ["planted unit"] },
+			fold: '<reflect type="check">planted unit</reflect>',
+			branchCount: 1,
+			settledCount: 1,
+			usage: [],
+		} as never);
+		expect(runtime.hasPendingFold).toBe(true);
+
+		const target = session.sessionManager.getBranch().find(entry => entry.type === "message");
+		expect(target).toBeDefined();
+		await session.branch((target as { id: string }).id);
+
 		expect(runtime.hasPendingFold).toBe(false);
 
 		const callsBefore = script.mainCalls().length;
