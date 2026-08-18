@@ -30,6 +30,7 @@ import { formatNumber } from "@oh-my-pi/pi-utils";
 import type { SecondThoughtFoldEntry } from "../../session/second-thought/fold";
 import { parseFoldEntry, SECOND_THOUGHT_FOLD_CUSTOM_TYPE } from "../../session/second-thought/fold";
 import { createCachedComponent, formatExpandHint, replaceTabs, truncateToWidth } from "../../tools/render-utils";
+import { sanitizeStatusText } from "../shared";
 import type { Theme, ThemeColor } from "../theme/theme";
 import { theme as defaultTheme } from "../theme/theme";
 import {
@@ -75,7 +76,7 @@ function formatUsd(value: number): string {
 
 /** Collapse a unit body to one display line. */
 function oneLine(text: string): string {
-	return replaceTabs(text).replace(/\s+/g, " ").trim();
+	return sanitizeStatusText(replaceTabs(text));
 }
 
 interface UnitLine {
@@ -121,28 +122,52 @@ function costLine(summary: SecondThoughtFoldSummary, theme: Theme): string {
 	return line;
 }
 
-/** The single stats line: what the fold harvested, and what the session skipped. */
-function statsLine(summary: SecondThoughtFoldSummary, theme: Theme): string {
-	const parts: string[] = [
-		`${summary.unitCount} ${summary.unitCount === 1 ? "unit" : "units"}`,
-		`${summary.settledCount}/${summary.branchCount} settled`,
-		formatWindow(summary.windowMs),
-	];
-	let line = theme.fg("dim", parts.join(theme.sep.dot));
+/** Append a complete stats detail, or an ellipsis when the next detail will not fit. */
+function appendStatsPart(line: string, part: string, width: number, theme: Theme): { line: string; complete: boolean } {
+	if (visibleWidth(line) + visibleWidth(part) <= width) return { line: line + part, complete: true };
+	const remaining = Math.max(0, width - visibleWidth(line));
+	if (remaining === 0) return { line, complete: false };
+	return { line: line + truncateToWidth(theme.fg("dim", "…"), remaining), complete: false };
+}
 
-	if (!summary.delivered) {
-		line += theme.fg("warning", `${theme.sep.dot}undelivered (${summary.retireReason})`);
-	}
-	if (summary.truncated) {
-		line += theme.fg("warning", `${theme.sep.dot}truncated`);
-	}
+/** The single stats line: what the fold harvested, and what the session skipped. */
+function statsLine(summary: SecondThoughtFoldSummary, theme: Theme, width: number): string {
+	let line = truncateToWidth(
+		theme.fg("dim", `${summary.unitCount} ${summary.unitCount === 1 ? "unit" : "units"}`),
+		width,
+	);
+	let complete = visibleWidth(line) < width;
+	const append = (color: ThemeColor, text: string): void => {
+		if (!complete) return;
+		const result = appendStatsPart(line, theme.fg(color, `${theme.sep.dot}${text}`), width, theme);
+		line = result.line;
+		complete = result.complete;
+	};
+
+	append("dim", `${summary.settledCount}/${summary.branchCount} settled`);
+	append("dim", formatWindow(summary.windowMs));
+	if (!summary.delivered) append("warning", `undelivered (${summary.retireReason})`);
+	if (summary.truncated) append("warning", "truncated");
 
 	const totalSkips = summary.skips.reduce((sum, skip) => sum + skip.count, 0);
 	if (totalSkips > 0) {
-		const detail = summary.skips
-			.map(skip => theme.fg(BUCKET_COLORS[skip.bucket], `${skip.reason} ${skip.count}`))
-			.join(theme.fg("dim", ", "));
-		line += theme.fg("dim", `${theme.sep.dot}${totalSkips} skipped (`) + detail + theme.fg("dim", ")");
+		append("dim", `${totalSkips} skipped (`);
+		for (const [index, skip] of summary.skips.entries()) {
+			if (!complete) break;
+			const prefix = index === 0 ? "" : theme.fg("dim", ", ");
+			const result = appendStatsPart(
+				line,
+				`${prefix}${theme.fg(BUCKET_COLORS[skip.bucket], `${skip.reason} ${skip.count}`)}`,
+				width,
+				theme,
+			);
+			line = result.line;
+			complete = result.complete;
+		}
+		if (complete) {
+			const result = appendStatsPart(line, theme.fg("dim", ")"), width, theme);
+			line = result.line;
+		}
 	}
 	return line;
 }
@@ -164,30 +189,33 @@ export function createSecondThoughtDiagnosticCard(
 		getExpanded,
 		(width, expanded) => {
 			const header = theme.fg("customMessageLabel", theme.bold(`${theme.icon.branch} Second Thought`));
-			const lines: string[] = [header];
+			const lines: string[] = [truncateToWidth(header, width)];
 
 			const all = unitLines(summary);
 			const shown = expanded ? all : all.slice(0, COLLAPSED_UNITS);
 			for (const unit of shown) {
 				const label = unit.labeled ? unit.atom.padEnd(labelWidth) : " ".repeat(labelWidth);
 				const prefix = `${theme.fg(atomColor(unit.atom), rail)} ${theme.fg(atomColor(unit.atom), label)}  `;
-				const bodyWidth = Math.max(8, width - railWidth - labelWidth - 2);
-				lines.push(`${prefix}${truncateToWidth(unit.text, bodyWidth)}`);
+				const bodyWidth = Math.max(0, width - railWidth - labelWidth - 2);
+				lines.push(truncateToWidth(`${prefix}${truncateToWidth(unit.text, bodyWidth)}`, width));
 			}
 
 			const hidden = all.length - shown.length;
 			if (hidden > 0) {
 				const hint = formatExpandHint(theme, false, true);
 				lines.push(
-					`${theme.fg("dim", rail)} ${theme.fg("dim", `… +${hidden} more ${hidden === 1 ? "unit" : "units"}`)}${hint ? ` ${hint}` : ""}`,
+					truncateToWidth(
+						`${theme.fg("dim", rail)} ${theme.fg("dim", `… +${hidden} more ${hidden === 1 ? "unit" : "units"}`)}${hint ? ` ${hint}` : ""}`,
+						width,
+					),
 				);
 			}
 			if (all.length === 0) {
-				lines.push(`${theme.fg("dim", rail)} ${theme.fg("dim", "no units harvested")}`);
+				lines.push(truncateToWidth(`${theme.fg("dim", rail)} ${theme.fg("dim", "no units harvested")}`, width));
 			}
 
-			lines.push(costLine(summary, theme));
-			lines.push(statsLine(summary, theme));
+			lines.push(truncateToWidth(costLine(summary, theme), width));
+			lines.push(truncateToWidth(statsLine(summary, theme, width), width));
 			return lines;
 		},
 		{ paddingX: 1 },

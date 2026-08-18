@@ -721,7 +721,8 @@ const secondThoughtSegment: StatusLineSegment = {
 		// earlier and harvested later.
 		const units = view.lastFold?.unitCount ?? 0;
 		if (units > 0) {
-			const content = withIcon(theme.icon.branch, formatNumber(units));
+			const count = `${formatNumber(units)}${view.lastFold?.truncated ? "…" : ""}`;
+			const content = withIcon(theme.icon.branch, count);
 			return { content: theme.fg("statusLineSubagents", content), visible: true };
 		}
 

@@ -57,6 +57,22 @@ function card(entry: SecondThoughtFoldEntry, costUsd?: number, costIsIndicative?
 	return new SecondThoughtDiagnosticComponent(summary);
 }
 
+function loadedCard(
+	entry: SecondThoughtFoldEntry,
+	costUsd?: number,
+	costIsIndicative?: boolean,
+): SecondThoughtDiagnosticComponent {
+	const component = secondThoughtDiagnosticComponentFor(
+		{ type: "custom", customType: SECOND_THOUGHT_FOLD_CUSTOM_TYPE, data: entry },
+		{
+			settings: { get: () => true },
+			summaryOptions: { costUsd, costIsIndicative },
+		},
+	);
+	if (!component) throw new Error("expected a loaded card");
+	return component;
+}
+
 function rows(component: { render(width: number): readonly string[] }, width = 100): string[] {
 	return component
 		.render(width)
@@ -65,6 +81,10 @@ function rows(component: { render(width: number): readonly string[] }, width = 1
 }
 
 describe("Second Thought transcript card", () => {
+	it("pins the collapsed unit count", () => {
+		expect(COLLAPSED_UNITS).toBe(4);
+	});
+
 	it("leads with a label, one line per unit, and a single stats line", () => {
 		const lines = rows(card(foldEntry()));
 
@@ -154,6 +174,53 @@ describe("Second Thought transcript card", () => {
 		const long = "x".repeat(400);
 		const lines = rows(card(foldEntry({ unitsByAtom: { check: [long] }, unitCount: 1 })), 60);
 		for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
+	});
+
+	it("clamps every rendered band at narrow widths while progressively eliding skip detail", () => {
+		const entry = foldEntry({
+			unitsByAtom: {
+				check: ["first check", "second check"],
+				recall: ["recall result", "another recall"],
+				alternative: ["alternative result", "another alternative"],
+			},
+			unitCount: 6,
+			branchCount: 3,
+			settledCount: 1,
+			truncated: true,
+			delivered: false,
+			retireReason: "run-end",
+			skips: { "adaptive-window": 4, "provider-cooldown": 3, "in-flight-cap": 2 },
+		});
+		const component = loadedCard(entry, 0.0041, true);
+
+		for (const width of [40, 60, 80, 120]) {
+			for (const line of component.render(width)) {
+				expect(Bun.stringWidth(Bun.stripANSI(line))).toBeLessThanOrEqual(width);
+			}
+		}
+
+		const lines = rows(component, 120);
+		expect(lines.find(line => line.includes("$"))).toContain("est");
+		const stats = lines.at(-1);
+		expect(stats).toContain("9 skipped");
+		expect(stats).toContain("adaptive-window 4");
+		expect(stats).toContain("…");
+	});
+
+	it("strips terminal controls from model-authored unit text", () => {
+		const component = card(
+			foldEntry({
+				unitsByAtom: {
+					check: ["\x1b[31mred\x1b[0m \x1b[2Jclear\x07 \x1b]2;hidden title\x07title"],
+				},
+				unitCount: 1,
+			}),
+		);
+		const unit = rows(component).find(line => line.includes("red"));
+
+		expect(unit).toContain("red clear title");
+		expect(unit).not.toContain("hidden title");
+		expect(unit).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
 	});
 });
 

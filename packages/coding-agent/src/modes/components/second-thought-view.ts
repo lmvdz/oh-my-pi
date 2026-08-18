@@ -29,8 +29,9 @@
  * The coordinator distinguishes fourteen skip reasons. A status-line segment has
  * room for one glyph, so reasons collapse into four
  * {@link SecondThoughtSkipBucket}s that answer the only question the glyph can
- * answer — *whose problem is it?* The verbatim reason is carried through on the
- * view and printed by the transcript card.
+ * answer — *whose problem is it?* The verbatim reason remains available on the
+ * view for a detailed surface; the status-line segment deliberately uses only
+ * the bucket glyph.
  */
 
 import type { Usage } from "@oh-my-pi/pi-ai";
@@ -91,7 +92,6 @@ export interface SecondThoughtAtomUnits {
 
 /** One retired fold, flattened for display. */
 export interface SecondThoughtFoldSummary {
-	readonly generation: number;
 	/** Per-atom units in canonical order; atoms that produced nothing are dropped. */
 	readonly atoms: readonly SecondThoughtAtomUnits[];
 	readonly unitCount: number;
@@ -222,7 +222,6 @@ export function buildSecondThoughtFoldSummary(
 		.sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason));
 
 	return {
-		generation: entry.generation,
 		atoms,
 		unitCount: entry.unitCount,
 		branchCount: entry.branchCount,

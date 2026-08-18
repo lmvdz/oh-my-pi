@@ -4,6 +4,7 @@ import {
 	type SecondThoughtStatusView,
 	secondThoughtSkipBucket,
 } from "@oh-my-pi/pi-coding-agent/modes/components/second-thought-view";
+import { STATUS_LINE_PRESETS } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/presets";
 import type { SegmentContext } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
 import { renderSegment } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -51,6 +52,10 @@ function contextFor(view: SecondThoughtStatusView | undefined, implemented = tru
 }
 
 describe("second_thought status-line segment", () => {
+	it("ships in the default status-line preset", () => {
+		expect(STATUS_LINE_PRESETS.default.leftSegments).toContain("second_thought");
+	});
+
 	it("is omitted when the feature is disabled", () => {
 		const rendered = renderSegment("second_thought", contextFor({ enabled: false }));
 		expect(rendered).toEqual({ content: "", visible: false });
@@ -73,6 +78,12 @@ describe("second_thought status-line segment", () => {
 		expect(rendered.visible).toBe(true);
 		expect(Bun.stripANSI(rendered.content)).toBe(`${theme.icon.branch} 2`);
 		expect(rendered.content).toBe(theme.fg("statusLineSubagents", `${theme.icon.branch} 2`));
+	});
+
+	it("marks a truncated fold count as incomplete", () => {
+		const view = buildSecondThoughtStatusView({ enabled: true, entry: foldEntry({ truncated: true }) });
+
+		expect(Bun.stripANSI(renderSegment("second_thought", contextFor(view)).content)).toBe(`${theme.icon.branch} 2…`);
 	});
 
 	it("prefers a harvest over an earlier skip", () => {
