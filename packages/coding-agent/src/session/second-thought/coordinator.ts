@@ -10,22 +10,69 @@
  * `AgentSession`, so every exit path is drivable from a stub host with no
  * network.
  *
- * ## Why a generation counter rather than a message timestamp
+ * ## Stream identity: a host-armed token, never object identity
  *
  * The loop can replace a streaming assistant message inside one turn (the
  * Harmony leak retry streams a SECOND full sequence under the same
  * `turn_start`/`turn_end` pair). Keying fork state on `message.timestamp`
  * cannot distinguish the replacement from the original when both land in the
- * same millisecond — a real hazard on a fast local provider. Fork state is
- * therefore keyed on a monotonic generation counter, and single-fire is keyed
- * on the identity of the streaming `partial` message instance. A late result
- * from a superseded generation is discarded by generation id even if its abort
- * never settled.
+ * same millisecond, and keying single-fire on the identity of `event.partial`
+ * is simply WRONG against the live surface: `agent-loop.ts` reassigns
+ * `partialMessage = event.partial` on every stream event, so consecutive
+ * `toolcall_start`s in one multi-tool message carry different objects and an
+ * identity key re-forks (and cancels the previous fork) on each of them.
  *
- * Truncate-resume is the mirror image: it replaces the message WITHOUT
- * re-streaming, so no `AssistantMessageEvent` reaches the coordinator at all
- * and no re-arm happens. That asymmetry is deliberate and is asserted in the
- * tests.
+ * The interceptor surface makes the obvious repair unavailable too. Agent's
+ * `onAssistantMessageEvent` is invoked ONLY from the content-event branch of
+ * `agent-loop.ts` (`text_*` / `thinking_*` / `image_end` / `toolcall_*`); the
+ * `start` case never calls it — it pushes `message_start` to the session event
+ * stream instead. So a `start`-typed `AssistantMessageEvent` never reaches this
+ * class and cannot arm anything.
+ *
+ * Stream identity is therefore HOST-ARMED. The wiring (ticket 08) calls
+ * {@link SecondThoughtCoordinator.noteStreamStart} once per fresh provider
+ * stream, and the coordinator keys single-fire on an internal monotonic stream
+ * sequence rather than on any object it was handed. The contract, stated so 08
+ * can be checked against it:
+ *
+ * - **Call it** when a NEW provider stream begins for the primary agent — the
+ *   `message_start` the loop pushes when it first appends a streaming partial
+ *   (`agent-loop.ts`, the `case "start"` `addedPartial === false` branch).
+ * - **Call it again** for the Harmony abort-retry: that path `continue`s into a
+ *   whole new provider call, which appends a new partial and pushes a new
+ *   `message_start`. A new token with a live fork means *this fork is stale* —
+ *   the coordinator cancels it and re-arms, so the retry's own first tool call
+ *   forks fresh.
+ * - **Do NOT call it** for the Harmony truncate-and-resume path. That path
+ *   recovers the message without re-streaming and pushes a synthetic
+ *   `message_start` + `message_end` pair with no assistant content events at
+ *   all; re-arming there would cancel a healthy fork on the strength of an
+ *   event that represents no new provider work. If 08 wires arming to raw
+ *   `message_start` events it MUST pass a token, and pass the SAME token for
+ *   the resumed message — {@link SecondThoughtCoordinator.noteStreamStart} is a
+ *   no-op when the token is unchanged.
+ * - The token may be any value (a request id, the provider stream object, a
+ *   counter). It is compared with `===` and never retained beyond the
+ *   comparison. Passing `undefined` means "unconditionally a new stream".
+ *
+ * Turn end re-arms unconditionally, so a host that never calls
+ * `noteStreamStart` still forks once per turn rather than once per session.
+ *
+ * A monotonic fork generation identifies a fork across its async start, cancel
+ * and harvest; a late result from a superseded generation is discarded by
+ * generation id even if its abort never settled.
+ *
+ * ## Why the coordinator owns the branch abort controller
+ *
+ * The branches are started through {@link BranchStarter.startManyEager}, which
+ * publishes handle 0 synchronously and appends the rest when the stagger gate
+ * lifts. Handles alone are not enough: the queued branches do not exist yet, so
+ * there is nothing to abort. The coordinator therefore owns a per-fork
+ * `AbortController`, chains it to the run signal, and passes ITS signal as
+ * `request.signal`. Every teardown path (`cancelActive`, `onPrimaryTurnEnd`,
+ * `reset`, `dispose`) aborts that controller SYNCHRONOUSLY, before any `await`,
+ * which both tears down the started branches and stops the staggered ones from
+ * ever starting.
  *
  * ## Why cancel is not the same call as harvest
  *
@@ -63,6 +110,7 @@ import {
 	type BranchStreamOptions,
 	DEFAULT_BRANCH_MAX_TOKENS,
 	DEFAULT_HARVEST_CAP_PER_ATOM,
+	type EagerBranchFanOut,
 	normalizeBranchAtoms,
 	snapshotBranchContext,
 	snapshotTailIsDeveloper,
@@ -105,7 +153,14 @@ export type SecondThoughtSkipReason =
 	| "snapshot-failed";
 
 /** Why a fork produced no fold. */
-export type SecondThoughtDropReason = "history-epoch" | "cancelled" | "superseded" | "no-units" | "no-settled-branches";
+export type SecondThoughtDropReason =
+	| "history-epoch"
+	/** `reset()`/`dispose()` landed while the harvest was in flight. */
+	| "coordinator-epoch"
+	| "cancelled"
+	| "superseded"
+	| "no-units"
+	| "no-settled-branches";
 
 /** Why an active fork was cancelled. */
 export type SecondThoughtCancelReason = "run-abort" | "session-abort" | "dispose" | "reset" | "restream" | "turn-end";
@@ -178,6 +233,8 @@ export interface SecondThoughtHost {
 	harvestGraceMs?(): number;
 	/** Test seam: detached finalizer bound. */
 	finalizerTimeoutMs?(): number;
+	/** Test seam: how many adaptive skips pass before a forced probe fork. */
+	adaptiveProbeInterval?(): number;
 }
 
 /** What one settled fork yielded. */
@@ -199,19 +256,41 @@ export interface SecondThoughtHarvest {
 	readonly usage: readonly (Usage | undefined)[];
 }
 
-/** The subset of {@link BranchCaller} the coordinator needs (test seam). */
+/**
+ * The subset of {@link BranchCaller} the coordinator needs (test seam).
+ *
+ * Deliberately the EAGER shape: `startMany` cannot publish a handle until the
+ * stagger gate lifts, which leaves the coordinator with nothing to cancel and
+ * nothing to harvest for the whole window in which the primary tool batch
+ * typically finishes.
+ */
 export interface BranchStarter {
-	startMany(count: number, request: BranchCallRequest): Promise<BranchCallHandle[]>;
+	startManyEager(count: number, request: BranchCallRequest): EagerBranchFanOut;
 }
 
 interface ActiveFork {
 	readonly generation: number;
+	/** Host history epoch at fork time. */
 	readonly epoch: number;
+	/** Coordinator epoch at fork time; bumped by `reset()`/`dispose()`. */
+	readonly coordEpoch: number;
 	readonly forkedAt: number;
 	readonly info: SecondThoughtForkInfo;
-	/** The streaming message instance this fork belongs to. */
-	readonly partial: AssistantMessage | undefined;
-	handles: BranchCallHandle[];
+	/**
+	 * LIVE handle array from {@link EagerBranchFanOut}: index 0 is present the
+	 * moment the fork is created and the staggered branches append themselves.
+	 */
+	readonly handles: BranchCallHandle[];
+	/** Per-fork controller chained to the run signal; aborting it stops queued branches. */
+	readonly controller: AbortController;
+	/**
+	 * Handles whose result has already been collected (harvested or drained).
+	 *
+	 * With an eager fan-out the same handle can be reachable from both the cancel
+	 * path and the stagger tail; without this, one branch would be attributed to
+	 * the ledger twice.
+	 */
+	readonly observed: Set<BranchCallHandle>;
 	cancelled: boolean;
 	signal?: AbortSignal;
 	onSignalAbort?: () => void;
@@ -256,8 +335,22 @@ export class SecondThoughtCoordinator {
 	/** Monotonic; identifies a fork across its async start, cancel, and harvest. */
 	#generation = 0;
 	#active: ActiveFork | undefined;
-	/** Message instances already forked from — single-fire per streaming sequence. */
-	#forkedPartials = new WeakSet<AssistantMessage>();
+	/**
+	 * Monotonic provider-stream sequence. Bumped by
+	 * {@link SecondThoughtCoordinator.noteStreamStart} and by turn end; single-fire
+	 * compares against {@link SecondThoughtCoordinator.#armedStreamSeq}.
+	 */
+	#streamSeq = 0;
+	/** The last token the host armed with, compared by identity for idempotence. */
+	#streamToken: unknown;
+	/** Stream sequence a fork attempt was already made for. `-1` = none. */
+	#armedStreamSeq = -1;
+	/**
+	 * Bumped by `reset()`/`dispose()`. Every adaptive/EMA write and the harvest
+	 * delivery are gated on it, so state belonging to a torn-down conversation
+	 * can never leak into the next one.
+	 */
+	#coordEpoch = 0;
 	#disposed = false;
 	/** provider → wall-clock ms until which forking is suppressed after a 429. */
 	#cooldownUntil = new Map<string, number>();
@@ -284,6 +377,15 @@ export class SecondThoughtCoordinator {
 	/** Number of forks started in this session. */
 	get forkCount(): number {
 		return this.#generation;
+	}
+
+	/**
+	 * The adaptive-window EMAs, for diagnostics and for tests that pin the
+	 * generation/epoch guards on the state writes. Never used for control flow
+	 * outside {@link SecondThoughtCoordinator.#adaptiveWindowSkips}.
+	 */
+	get adaptiveEmas(): { readonly toolBatchMs: number | undefined; readonly branchTtftMs: number | undefined } {
+		return { toolBatchMs: this.#toolBatchEmaMs, branchTtftMs: this.#branchTtftEmaMs };
 	}
 
 	#now(): number {
@@ -315,32 +417,55 @@ export class SecondThoughtCoordinator {
 	}
 
 	/**
-	 * Stream-event hook. Forks on the FIRST `toolcall_start` of a streaming
-	 * message instance.
+	 * Arm a fresh provider stream. See the module doc for the exact host
+	 * contract — in short: once per new provider stream (including the Harmony
+	 * abort-retry's replacement call), never for truncate-and-resume.
+	 *
+	 * Idempotent for a repeated `token`; `undefined` always counts as new.
+	 * A new stream while a fork is live means that fork belongs to a stream the
+	 * provider abandoned, so it is cancelled here and the next `toolcall_start`
+	 * forks fresh.
+	 */
+	noteStreamStart(token?: unknown): void {
+		try {
+			if (this.#disposed) return;
+			if (token !== undefined && this.#streamToken === token) return;
+			this.#streamToken = token;
+			this.#streamSeq++;
+			if (this.#active) this.cancelActive("restream");
+		} catch (error) {
+			logger.debug("Second Thought stream arm failed", { error });
+		}
+	}
+
+	/**
+	 * Stream-event hook. Forks on the FIRST `toolcall_start` of an armed stream.
 	 *
 	 * Not text events: a text-only turn has no idle window and no next call to
 	 * sharpen. Not `toolcall_delta`: a no-argument tool call may never emit one.
+	 * Not `start`: the live interceptor is never invoked for it (module doc).
+	 *
+	 * Single-fire is per STREAM, not per `event.partial` object: agent-loop hands
+	 * a different partial to every event, so a later `toolcall_start` in the same
+	 * multi-tool message must be ignored rather than treated as a new stream.
+	 * A skipped attempt consumes the arm too — re-evaluating the gate on every
+	 * tool call of a batch would spray duplicate skips at the ledger for a
+	 * decision that cannot change inside one stream.
+	 *
 	 * Never throws — a fork failure is not a turn failure.
 	 */
 	onAssistantEvent(event: AssistantMessageEvent): void {
 		try {
-			if (this.#disposed) return;
-			if (event.type === "start") {
-				// A second streaming sequence inside one turn (Harmony abort-retry)
-				// supersedes the first: cancel the stale generation and re-arm.
-				if (this.#active && this.#active.partial !== event.partial) this.cancelActive("restream");
+			if (event.type !== "toolcall_start") return;
+			if (this.#armedStreamSeq === this.#streamSeq) return;
+			this.#armedStreamSeq = this.#streamSeq;
+			if (this.#disposed) {
+				this.#skip("disposed");
 				return;
 			}
-			if (event.type !== "toolcall_start") return;
-			const partial = event.partial;
-			if (partial) {
-				if (this.#forkedPartials.has(partial)) return;
-				this.#forkedPartials.add(partial);
-			}
-			// Defensive: a provider that skips `start` must not leave two live forks.
-			if (this.#active && this.#active.partial !== partial) this.cancelActive("restream");
-			if (this.#active) return;
-			this.#tryFork(partial);
+			// Defensive: a host that never arms must still not leave two live forks.
+			if (this.#active) this.cancelActive("restream");
+			this.#tryFork(event.partial);
 		} catch (error) {
 			logger.debug("Second Thought fork trigger failed", { error });
 		}
@@ -393,8 +518,12 @@ export class SecondThoughtCoordinator {
 		// A configured cap that cannot seat the main call plus every branch would
 		// serialize the fan-out behind a cross-process lease — the branch would
 		// then start after the window it was supposed to ride in.
+		//
+		// The cap must SEAT `branchCount + 1` calls, so the skip is `limit <
+		// branchCount + 1`, not `<=`. With the old `<=` an Anthropic cap of 2
+		// (main + one branch: exactly what the feature needs) never forked at all.
 		const inFlightLimit = this.#providerInFlightLimit(model.provider);
-		if (inFlightLimit !== undefined && inFlightLimit <= branchCount + 1) {
+		if (inFlightLimit !== undefined && inFlightLimit < branchCount + 1) {
 			this.#skip("in-flight-cap", { provider: model.provider, limit: inFlightLimit, branchCount });
 			return;
 		}
@@ -450,21 +579,27 @@ export class SecondThoughtCoordinator {
 			provider: model.provider,
 			conditioningChars: conditioningText.length,
 		};
+		// The coordinator owns the branch abort controller so every teardown path
+		// can stop the fan-out SYNCHRONOUSLY, including the branches the stagger
+		// has not started yet (they check this signal before firing).
+		const controller = new AbortController();
 		const active: ActiveFork = {
 			generation,
 			epoch: info.epoch,
+			coordEpoch: this.#coordEpoch,
 			forkedAt,
 			info,
-			partial,
 			handles: [],
+			controller,
+			observed: new Set<BranchCallHandle>(),
 			cancelled: false,
 			signal: fork.signal,
 		};
 		this.#active = active;
 
 		// Unconditional cleanup path #1: the run signal. Registered BEFORE the
-		// branches start, so an abort that lands during `startMany` still tears
-		// the fan-out down (the async start re-checks `cancelled`).
+		// branches start, so an abort that lands during the stagger still tears
+		// the fan-out down.
 		if (fork.signal) {
 			if (fork.signal.aborted) {
 				this.cancelActive("run-abort");
@@ -472,7 +607,10 @@ export class SecondThoughtCoordinator {
 			}
 			const onAbort = () => {
 				if (this.#active?.generation === generation) this.cancelActive("run-abort");
-				else active.cancelled = true;
+				else {
+					active.cancelled = true;
+					abortController(controller, "second-thought:run-abort");
+				}
 			};
 			active.onSignalAbort = onAbort;
 			try {
@@ -498,33 +636,47 @@ export class SecondThoughtCoordinator {
 			maxTokens: settings.get("secondThought.branchMaxTokens") || DEFAULT_BRANCH_MAX_TOKENS,
 			atoms: normalizeBranchAtoms(settings.get("secondThought.atoms")),
 			harvestCapPerAtom: settings.get("secondThought.harvestCapPerAtom") ?? DEFAULT_HARVEST_CAP_PER_ATOM,
-			signal: fork.signal,
+			// NOT `fork.signal`: the coordinator's own controller is chained to it
+			// and adds turn-end / reset / dispose / re-arm as abort sources.
+			signal: controller.signal,
 		};
 
-		void this.#startBranches(active, branchCount, request);
+		this.#startBranches(active, branchCount, request);
 	}
 
-	async #startBranches(active: ActiveFork, count: number, request: BranchCallRequest): Promise<void> {
-		let handles: BranchCallHandle[] = [];
+	/**
+	 * Start the fan-out and adopt its LIVE handle array.
+	 *
+	 * Handle 0 exists before this returns, so a `cancelActive` or
+	 * `onPrimaryTurnEnd` on the very next line already has something to abort and
+	 * something to harvest. The staggered handles append themselves into the same
+	 * array; the tail below only exists to catch the ordering where a handle is
+	 * appended after a cancel already walked the array.
+	 */
+	#startBranches(active: ActiveFork, count: number, request: BranchCallRequest): void {
+		let fanOut: EagerBranchFanOut;
 		try {
-			handles = await this.#caller.startMany(count, request);
+			fanOut = this.#caller.startManyEager(count, request);
 		} catch (error) {
-			// startMany is contracted never to throw; treat a violation as a dead
-			// fork rather than an unhandled rejection in the interceptor chain.
+			// startManyEager is contracted never to throw; treat a violation as a
+			// dead fork rather than an exception in the interceptor chain.
 			logger.debug("Second Thought branch start failed", { error });
 			if (this.#active?.generation === active.generation) this.#active = undefined;
 			this.#detachSignalListener(active);
 			return;
 		}
+		// `active.handles` IS the fan-out's array: growth is observed, not polled.
+		(active as { handles: BranchCallHandle[] }).handles = fanOut.handles;
 
-		// The fan-out may have been cancelled while `startMany` was staggering;
-		// late handles from a superseded generation are aborted on arrival.
-		if (active.cancelled || this.#active?.generation !== active.generation) {
-			for (const handle of handles) handle.abort("second-thought-cancelled");
-			this.#observeResults(active, handles);
-			return;
-		}
-		active.handles = handles;
+		void fanOut.settled
+			.then(handles => {
+				if (!active.cancelled && this.#active?.generation === active.generation) return;
+				// Cancelled mid-stagger: abort anything that arrived late and drain
+				// it for the ledger. Nothing here can produce a fold.
+				for (const handle of handles) handle.abort("second-thought-cancelled");
+				this.#observeResults(active, handles);
+			})
+			.catch(error => logger.debug("Second Thought branch fan-out failed", { error }));
 	}
 
 	#detachSignalListener(fork: ActiveFork): void {
@@ -548,6 +700,9 @@ export class SecondThoughtCoordinator {
 		if (!fork) return;
 		this.#active = undefined;
 		fork.cancelled = true;
+		// SYNCHRONOUS and first: this both tears down the started branches and
+		// stops the ones the stagger has queued from ever being started.
+		abortController(fork.controller, `second-thought:${reason}`);
 		this.#detachSignalListener(fork);
 		for (const handle of fork.handles) handle.abort(`second-thought:${reason}`);
 		this.#drop(reason === "restream" ? "superseded" : "cancelled", {
@@ -568,7 +723,14 @@ export class SecondThoughtCoordinator {
 	 */
 	reset(reason: SecondThoughtCancelReason = "reset"): void {
 		this.cancelActive(reason);
-		this.#forkedPartials = new WeakSet<AssistantMessage>();
+		// Bumped BEFORE the state is cleared: a finalizer or harvest still in
+		// flight for the old conversation captured the previous value and its
+		// writes are refused from here on. Model change resets without moving the
+		// HISTORY epoch, so the history check alone cannot cover this.
+		this.#coordEpoch++;
+		this.#streamSeq++;
+		this.#streamToken = undefined;
+		this.#armedStreamSeq = -1;
 		this.#toolBatchEmaMs = undefined;
 		this.#branchTtftEmaMs = undefined;
 		this.#adaptiveSkips = 0;
@@ -578,6 +740,7 @@ export class SecondThoughtCoordinator {
 	/** Cancel everything and refuse further forks. Idempotent. */
 	dispose(): void {
 		this.cancelActive("dispose");
+		this.#coordEpoch++;
 		this.#disposed = true;
 	}
 
@@ -593,7 +756,19 @@ export class SecondThoughtCoordinator {
 		// Unconditional cleanup: the coordinator holds no branch after turn end,
 		// whatever happens below.
 		this.#active = undefined;
+		// A turn boundary always re-arms, so a host that never calls
+		// `noteStreamStart` degrades to one fork per turn rather than one per
+		// session — and the next turn's first tool call is never swallowed by the
+		// previous turn's arm.
+		this.#streamSeq++;
+		this.#streamToken = undefined;
+		this.#armedStreamSeq = -1;
 		if (!fork) return;
+		// SYNCHRONOUS, before the first await: the fan-out has had its window, and
+		// the branches the stagger has not started yet must never start now.
+		fork.cancelled = true;
+		abortController(fork.controller, "second-thought:turn-end");
+		for (const handle of fork.handles) handle.abort("second-thought:turn-end");
 		try {
 			await this.#harvest(fork);
 		} catch (error) {
@@ -602,36 +777,44 @@ export class SecondThoughtCoordinator {
 	}
 
 	async #harvest(fork: ActiveFork): Promise<void> {
-		fork.cancelled = true;
 		this.#detachSignalListener(fork);
-		const handles = fork.handles;
-		// Abort FIRST and synchronously: the branch has had its window, and a
-		// provider still decoding is spending money on output nobody harvests.
-		for (const handle of handles) handle.abort("second-thought:turn-end");
+		// Snapshotted here: the stagger tail can still append to the live array,
+		// and a handle that appears after the abort has nothing to contribute.
+		const handles = [...fork.handles];
 
 		const harvestedAt = this.#now();
 		const windowMs = Math.max(0, harvestedAt - fork.forkedAt);
-		this.#toolBatchEmaMs = ema(this.#toolBatchEmaMs, windowMs);
 
 		if (handles.length > 0) await this.#awaitGrace(handles);
 
 		const settled: BranchCallResult[] = [];
 		const pending: BranchCallHandle[] = [];
-		for (const handle of handles) {
+		for (const handle of this.#claimUnobserved(fork, handles)) {
 			const result = handle.settledResult();
 			if (result) settled.push(result);
 			else pending.push(handle);
 		}
 		this.#recordResults(fork, settled);
 		// Whatever missed the grace is drained off the critical path.
-		this.#detachFinalizer(fork, pending);
+		this.#detachFinalizerFor(fork, pending);
 
+		// Every state write below is gated: a fork whose conversation was torn
+		// down under it may still pay the ledger, but it may not steer the next
+		// conversation's adaptive decisions and it may not deliver a fold.
+		if (!this.#stateWritable(fork)) {
+			this.#drop("coordinator-epoch", { generation: fork.generation, coordEpoch: fork.coordEpoch });
+			return;
+		}
 		if (fork.epoch !== this.#host.historyEpoch()) {
 			// rewind / replaceMessages / compaction moved history under the fork:
 			// the reflections describe a conversation that no longer exists.
 			this.#drop("history-epoch", { generation: fork.generation, epoch: fork.epoch });
 			return;
 		}
+		// Only a fork that survived to a real harvest measures a real tool-batch
+		// window; writing this before the guards fed the adaptive skip with
+		// windows from turns that were rewound or reset out from under it.
+		this.#toolBatchEmaMs = ema(this.#toolBatchEmaMs, windowMs);
 		if (settled.length === 0) {
 			this.#drop("no-settled-branches", { generation: fork.generation, branches: handles.length });
 			return;
@@ -710,9 +893,21 @@ export class SecondThoughtCoordinator {
 		};
 	}
 
+	/**
+	 * Attribute branch results to the ledger, and feed the TTFT EMA only when
+	 * the fork still belongs to the live conversation.
+	 *
+	 * The split is intentional and is the ledger's documented policy: usage the
+	 * provider already billed is recorded for EVERY fork, including cancelled,
+	 * superseded, rewound and post-reset ones — the money was spent and hiding it
+	 * would make the ledger a liar. The adaptive state is the opposite: it steers
+	 * future decisions, so a fork from a torn-down conversation must not touch it
+	 * (a detached finalizer routinely lands after `reset()`).
+	 */
 	#recordResults(fork: ActiveFork, results: readonly BranchCallResult[]): void {
+		const writable = this.#stateWritable(fork);
 		for (const result of results) {
-			if (typeof result.ttftMs === "number" && result.ttftMs >= 0) {
+			if (writable && typeof result.ttftMs === "number" && result.ttftMs >= 0) {
 				this.#branchTtftEmaMs = ema(this.#branchTtftEmaMs, result.ttftMs);
 			}
 			try {
@@ -731,7 +926,7 @@ export class SecondThoughtCoordinator {
 	 * attributed. Nothing here can deliver a fold — a late result is discarded
 	 * by generation, since the fold for that generation was already decided.
 	 */
-	#detachFinalizer(fork: ActiveFork, pending: readonly BranchCallHandle[]): void {
+	#detachFinalizerFor(fork: ActiveFork, pending: readonly BranchCallHandle[]): void {
 		if (pending.length === 0) return;
 		const timeoutMs = this.#finalizerTimeoutMs();
 		const task = (async () => {
@@ -763,7 +958,28 @@ export class SecondThoughtCoordinator {
 	/** Observe results of a cancelled fan-out for the ledger, never for a fold. */
 	#observeResults(fork: ActiveFork, handles: readonly BranchCallHandle[]): void {
 		if (handles.length === 0) return;
-		this.#detachFinalizer(fork, handles);
+		this.#detachFinalizerFor(fork, this.#claimUnobserved(fork, handles));
+	}
+
+	/**
+	 * Take ownership of the handles this fork has not accounted for yet.
+	 *
+	 * With an eager fan-out the cancel path and the stagger tail can both reach
+	 * the same handle; claiming makes ledger attribution exactly-once.
+	 */
+	#claimUnobserved(fork: ActiveFork, handles: readonly BranchCallHandle[]): BranchCallHandle[] {
+		const fresh: BranchCallHandle[] = [];
+		for (const handle of handles) {
+			if (fork.observed.has(handle)) continue;
+			fork.observed.add(handle);
+			fresh.push(handle);
+		}
+		return fresh;
+	}
+
+	/** Whether adaptive/delivery state may still be written on this fork's behalf. */
+	#stateWritable(fork: ActiveFork): boolean {
+		return !this.#disposed && fork.coordEpoch === this.#coordEpoch;
 	}
 
 	/** Await every detached finalizer. Tests only — the loop must never call this. */
@@ -813,9 +1029,32 @@ export class SecondThoughtCoordinator {
 	#adaptiveWindowSkips(): boolean {
 		if (this.#toolBatchEmaMs === undefined || this.#branchTtftEmaMs === undefined) return false;
 		if (this.#toolBatchEmaMs >= this.#branchTtftEmaMs) return false;
-		// Every ADAPTIVE_PROBE_INTERVAL-th qualifying turn forks anyway, so a
-		// stale estimate cannot pin the feature off forever.
-		return ++this.#adaptiveSkips % ADAPTIVE_PROBE_INTERVAL !== 0;
+		// Every Nth qualifying turn forks anyway, so a stale estimate cannot pin
+		// the feature off forever. `<= 1` disables the skip entirely.
+		const interval = this.#adaptiveProbeInterval();
+		if (interval <= 1) return false;
+		return ++this.#adaptiveSkips % interval !== 0;
+	}
+
+	#adaptiveProbeInterval(): number {
+		try {
+			const configured = this.#host.adaptiveProbeInterval?.();
+			if (typeof configured === "number" && Number.isFinite(configured) && configured >= 1) {
+				return Math.trunc(configured);
+			}
+		} catch {
+			// a throwing seam falls back to the constant
+		}
+		return ADAPTIVE_PROBE_INTERVAL;
+	}
+}
+
+/** Abort a controller without ever letting a listener's throw escape. */
+function abortController(controller: AbortController, reason: unknown): void {
+	try {
+		if (!controller.signal.aborted) controller.abort(reason);
+	} catch {
+		// idempotent cancel never throws
 	}
 }
 

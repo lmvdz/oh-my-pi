@@ -19,10 +19,12 @@ import {
 	type BranchCallRequest,
 	type BranchCallResult,
 	type BranchStreamOptions,
+	type EagerBranchFanOut,
 } from "../../src/session/second-thought/branch-call";
 import {
 	type BranchStarter,
 	buildConditioningText,
+	FINALIZER_TIMEOUT_MS,
 	HARVEST_GRACE_MS,
 	SecondThoughtCoordinator,
 	type SecondThoughtDropReason,
@@ -195,6 +197,8 @@ interface Harness {
 	epoch: { value: number };
 	settings: Settings;
 	starts: number;
+	/** Every request handed to the branch starter. */
+	requests: BranchCallRequest[];
 }
 
 interface HarnessOptions {
@@ -208,7 +212,9 @@ interface HarnessOptions {
 	finalizerTimeoutMs?: number;
 	starter?: BranchStarter;
 	now?: () => number;
+	adaptiveProbeInterval?: number;
 	deliverHarvest?: (harvest: SecondThoughtHarvest) => void;
+	streamOptions?: BranchStreamOptions;
 }
 
 function harness(options: HarnessOptions = {}): Harness {
@@ -228,12 +234,14 @@ function harness(options: HarnessOptions = {}): Harness {
 		recordHarvest: h => ledger.harvests.push(h),
 	};
 
-	const streamOptions = {
-		apiKey: "k",
-		reasoning: undefined,
-		hideThinkingSummary: undefined,
-		cacheRetention: undefined,
-	} as BranchStreamOptions;
+	const streamOptions =
+		options.streamOptions ??
+		({
+			apiKey: "k",
+			reasoning: undefined,
+			hideThinkingSummary: undefined,
+			cacheRetention: undefined,
+		} as BranchStreamOptions);
 
 	const host: SecondThoughtHost = {
 		settings,
@@ -259,6 +267,8 @@ function harness(options: HarnessOptions = {}): Harness {
 		harvestGraceMs: () => options.graceMs ?? 40,
 		finalizerTimeoutMs: () => options.finalizerTimeoutMs ?? 60,
 		now: options.now,
+		adaptiveProbeInterval:
+			options.adaptiveProbeInterval === undefined ? undefined : () => options.adaptiveProbeInterval as number,
 	};
 
 	const inner: BranchStarter = options.starter ?? new BranchCaller({ streamFn: provider.streamFn as never });
@@ -272,27 +282,43 @@ function harness(options: HarnessOptions = {}): Harness {
 		epoch,
 		settings,
 		starts: 0,
+		requests: [],
 	};
 	// Records every handle and every abort so "no branch outlives the
-	// coordinator" is checkable after each test.
+	// coordinator" is checkable after each test. The wrapper preserves the eager
+	// contract: its handle array is live and grows in step with the inner one.
+	const wrap = (handle: BranchCallHandle): BranchCallHandle => {
+		const entry = { handle, aborts: [] as unknown[] };
+		const wrapped: BranchCallHandle = {
+			...handle,
+			settledResult: () => handle.settledResult(),
+			abort: (reason?: unknown) => {
+				entry.aborts.push(reason);
+				handle.abort(reason);
+			},
+		};
+		entry.handle = wrapped;
+		handles.push(entry);
+		return wrapped;
+	};
 	const recording: BranchStarter = {
-		async startMany(count: number, request: BranchCallRequest): Promise<BranchCallHandle[]> {
+		startManyEager(count: number, request: BranchCallRequest): EagerBranchFanOut {
 			result.starts++;
-			const started = await inner.startMany(count, request);
-			return started.map(handle => {
-				const entry = { handle, aborts: [] as unknown[] };
-				const wrapped: BranchCallHandle = {
-					...handle,
-					settledResult: () => handle.settledResult(),
-					abort: (reason?: unknown) => {
-						entry.aborts.push(reason);
-						handle.abort(reason);
-					},
-				};
-				entry.handle = wrapped;
-				handles.push(entry);
-				return wrapped;
-			});
+			result.requests.push(request);
+			const fanOut = inner.startManyEager(count, request);
+			const live: BranchCallHandle[] = [];
+			const sync = () => {
+				for (let index = live.length; index < fanOut.handles.length; index++)
+					live.push(wrap(fanOut.handles[index]));
+			};
+			sync();
+			return {
+				handles: live,
+				settled: fanOut.settled.then(() => {
+					sync();
+					return live;
+				}),
+			};
 		},
 	};
 	result.coordinator = new SecondThoughtCoordinator(host, recording);
@@ -311,15 +337,72 @@ async function expectNoBranchOutlives(h: Harness): Promise<void> {
 	await h.coordinator.whenSettled();
 }
 
-function streamToolCall(h: Harness, partial: AssistantMessage, withStart = true): void {
-	if (withStart) h.coordinator.onAssistantEvent({ type: "start", partial } as AssistantMessageEvent);
+/**
+ * A fresh partial instance per event, mirroring `snapshotAssistantMessage`.
+ *
+ * `agent-loop.ts` reassigns `partialMessage = event.partial` on every stream
+ * event, so the interceptor never sees the same object twice. A harness that
+ * reuses one object cannot detect a single-fire keyed on object identity —
+ * exactly the defect gauntlet round 1 found.
+ */
+function snapshotPartial(partial: AssistantMessage): AssistantMessage {
+	return {
+		...partial,
+		content: partial.content.map(block => ({ ...block })),
+		usage: partial.usage ? { ...partial.usage } : undefined,
+	} as AssistantMessage;
+}
+
+let streamTokenSeq = 0;
+
+interface StreamOptions {
+	/** Host stream token; a fresh one per call unless pinned. */
+	token?: unknown;
+	/** Skip the host arming call (a host that never wires `noteStreamStart`). */
+	arm?: boolean;
+	/** How many tool calls this one streaming message emits. */
+	toolCalls?: number;
+}
+
+/**
+ * Replay one provider stream the way `agent-loop.ts` drives the interceptor:
+ * the wiring arms the stream at `message_start`, then every CONTENT event
+ * (`thinking_*` / `toolcall_*`) reaches `onAssistantEvent` with its own partial.
+ *
+ * Note what is deliberately absent: no `start`-typed `AssistantMessageEvent`.
+ * The loop's `case "start"` pushes `message_start` to the session stream and
+ * never calls `config.onAssistantMessageEvent`, so the coordinator cannot see
+ * one on the live surface.
+ */
+function streamToolCall(h: Harness, partial: AssistantMessage, options: StreamOptions = {}): void {
+	const { arm = true, token = `stream-${++streamTokenSeq}`, toolCalls = 1 } = options;
+	if (arm) h.coordinator.noteStreamStart(token);
 	h.coordinator.onAssistantEvent({
 		type: "thinking_delta",
 		contentIndex: 0,
 		delta: CONDITIONING,
-		partial,
+		partial: snapshotPartial(partial),
 	} as AssistantMessageEvent);
-	h.coordinator.onAssistantEvent({ type: "toolcall_start", contentIndex: 1, partial } as AssistantMessageEvent);
+	for (let index = 0; index < toolCalls; index++) {
+		const contentIndex = 1 + index;
+		h.coordinator.onAssistantEvent({
+			type: "toolcall_start",
+			contentIndex,
+			partial: snapshotPartial(partial),
+		} as AssistantMessageEvent);
+		h.coordinator.onAssistantEvent({
+			type: "toolcall_delta",
+			contentIndex,
+			delta: "{}",
+			partial: snapshotPartial(partial),
+		} as AssistantMessageEvent);
+		h.coordinator.onAssistantEvent({
+			type: "toolcall_end",
+			contentIndex,
+			toolCall: { id: `t${index}`, name: "read", arguments: {} },
+			partial: snapshotPartial(partial),
+		} as unknown as AssistantMessageEvent);
+	}
 }
 
 /** Let the fire-and-forget fork actually start its branches. */
@@ -365,12 +448,9 @@ describe("conditioning text", () => {
 // ── fork trigger ────────────────────────────────────────────────────────────
 
 describe("fork trigger", () => {
-	it("forks on the first toolcall_start and only once per message instance", async () => {
+	it("forks on the first toolcall_start of an armed stream", async () => {
 		const h = track(harness());
-		const partial = streamingPartial();
-		streamToolCall(h, partial);
-		await settleFork();
-		h.coordinator.onAssistantEvent({ type: "toolcall_start", contentIndex: 2, partial } as AssistantMessageEvent);
+		streamToolCall(h, streamingPartial());
 		await settleFork();
 
 		expect(h.coordinator.forkCount).toBe(1);
@@ -380,28 +460,46 @@ describe("fork trigger", () => {
 		await expectNoBranchOutlives(h);
 	});
 
+	it("forks ONCE across a multi-tool message even though every event carries a fresh partial", async () => {
+		// The regression gauntlet r1 found: `agent-loop` reassigns
+		// `partialMessage = event.partial` per event, so identity-keyed single-fire
+		// cancelled and re-forked on every tool call of a batch.
+		const h = track(harness());
+		streamToolCall(h, streamingPartial(), { toolCalls: 4 });
+		await settleFork();
+
+		expect(h.coordinator.forkCount).toBe(1);
+		expect(h.starts).toBe(1);
+		expect(h.provider.calls).toHaveLength(1);
+		expect(h.ledger.drops).toHaveLength(0);
+		expect(h.coordinator.activeGeneration).toBe(1);
+
+		await h.coordinator.onPrimaryTurnEnd();
+		expect(h.folds).toHaveLength(1);
+		await expectNoBranchOutlives(h);
+	});
+
+	it("evaluates the gate once per stream, so a skipped batch records one skip", async () => {
+		const h = track(harness({ overrides: { "secondThought.minConditioningChars": 5000 } }));
+		streamToolCall(h, streamingPartial(), { toolCalls: 5 });
+		await settleFork();
+
+		expect(h.ledger.skips.map(skip => skip.reason)).toEqual(["conditioning-too-short"]);
+		await h.coordinator.onPrimaryTurnEnd();
+		await expectNoBranchOutlives(h);
+	});
+
 	it("does not fork on text, thinking, or toolcall_delta events", async () => {
 		const h = track(harness());
 		const partial = streamingPartial();
-		h.coordinator.onAssistantEvent({ type: "start", partial } as AssistantMessageEvent);
-		h.coordinator.onAssistantEvent({
-			type: "text_delta",
-			contentIndex: 0,
-			delta: "writing prose",
-			partial,
-		} as AssistantMessageEvent);
-		h.coordinator.onAssistantEvent({
-			type: "thinking_delta",
-			contentIndex: 0,
-			delta: CONDITIONING,
-			partial,
-		} as AssistantMessageEvent);
-		h.coordinator.onAssistantEvent({
-			type: "toolcall_delta",
-			contentIndex: 1,
-			delta: "{",
-			partial,
-		} as AssistantMessageEvent);
+		h.coordinator.noteStreamStart("s1");
+		for (const event of [
+			{ type: "text_delta", contentIndex: 0, delta: "writing prose" },
+			{ type: "thinking_delta", contentIndex: 0, delta: CONDITIONING },
+			{ type: "toolcall_delta", contentIndex: 1, delta: "{" },
+		]) {
+			h.coordinator.onAssistantEvent({ ...event, partial: snapshotPartial(partial) } as AssistantMessageEvent);
+		}
 		await settleFork();
 
 		expect(h.coordinator.forkCount).toBe(0);
@@ -411,12 +509,39 @@ describe("fork trigger", () => {
 
 	it("does nothing at turn end for a no-tool turn", async () => {
 		const h = track(harness());
-		const partial = streamingPartial();
-		h.coordinator.onAssistantEvent({ type: "start", partial } as AssistantMessageEvent);
+		h.coordinator.noteStreamStart("s1");
 		await h.coordinator.onPrimaryTurnEnd();
 
 		expect(h.folds).toHaveLength(0);
 		expect(h.ledger.drops).toHaveLength(0);
+		await expectNoBranchOutlives(h);
+	});
+
+	it("still forks once per turn when the host never arms a stream", async () => {
+		// A host that has not wired `noteStreamStart` must degrade to one fork per
+		// turn, not one fork for the whole session.
+		const h = track(harness());
+		streamToolCall(h, streamingPartial(), { arm: false, toolCalls: 3 });
+		await settleFork();
+		expect(h.coordinator.forkCount).toBe(1);
+		await h.coordinator.onPrimaryTurnEnd();
+
+		streamToolCall(h, streamingPartial(CONDITIONING, 2000), { arm: false });
+		await settleFork();
+		expect(h.coordinator.forkCount).toBe(2);
+		await h.coordinator.onPrimaryTurnEnd();
+		expect(h.folds).toHaveLength(2);
+		await expectNoBranchOutlives(h);
+	});
+
+	it("records a `disposed` skip when a tool call arrives after dispose", async () => {
+		const h = track(harness());
+		h.coordinator.dispose();
+		streamToolCall(h, streamingPartial());
+		await settleFork();
+
+		expect(h.ledger.skips.map(skip => skip.reason)).toEqual(["disposed"]);
+		expect(h.coordinator.forkCount).toBe(0);
 		await expectNoBranchOutlives(h);
 	});
 
@@ -496,11 +621,46 @@ describe("skip conditions", () => {
 		await expectNoBranchOutlives(h);
 	});
 
-	it("skips when the provider in-flight cap leaves no spare slot", async () => {
-		await expectSkip(
-			track(harness({ overrides: { "providers.maxInFlightRequests": { anthropic: 2 } } })),
-			"in-flight-cap",
+	// The cap must SEAT main + K branches, so the boundary is `limit < K + 1`.
+	// The original `<=` meant the canonical Anthropic cap of 2 with K=1 — main
+	// call plus exactly one branch, the shape the feature is designed around —
+	// never forked at all.
+	it("forks at the in-flight cap boundary (limit 2, one branch)", async () => {
+		const h = track(
+			harness({
+				overrides: { "providers.maxInFlightRequests": { anthropic: 2 }, "secondThought.branchCount": 1 },
+			}),
 		);
+		streamToolCall(h, streamingPartial());
+		await settleFork();
+
+		expect(h.ledger.skips).toHaveLength(0);
+		expect(h.coordinator.forkCount).toBe(1);
+		await h.coordinator.onPrimaryTurnEnd();
+		await expectNoBranchOutlives(h);
+	});
+
+	it("skips one below the in-flight cap boundary (limit 2, two branches)", async () => {
+		const h = track(
+			harness({
+				overrides: { "providers.maxInFlightRequests": { anthropic: 2 }, "secondThought.branchCount": 2 },
+			}),
+		);
+		await expectSkip(h, "in-flight-cap");
+		expect(h.ledger.skips[0].info).toMatchObject({ limit: 2, branchCount: 2 });
+	});
+
+	it("forks when the cap exactly seats the main call and every branch", async () => {
+		const h = track(
+			harness({
+				overrides: { "providers.maxInFlightRequests": { anthropic: 3 }, "secondThought.branchCount": 2 },
+			}),
+		);
+		streamToolCall(h, streamingPartial());
+		await settleFork();
+		expect(h.coordinator.forkCount).toBe(1);
+		await h.coordinator.onPrimaryTurnEnd();
+		await expectNoBranchOutlives(h);
 	});
 
 	it("skips when the fork-time snapshot ends in a developer turn", async () => {
@@ -554,22 +714,25 @@ describe("skip conditions", () => {
 		);
 	});
 
-	it("skips adaptively when tool batches finish faster than branch first-token, with a periodic probe", async () => {
-		let clock = 0;
-		const h = track(harness({ now: () => clock, script: { firstDelayMs: 5 } }));
-		// Turn 1 measures both EMAs: a slow branch (TTFT) in a very short window.
-		clock = 0;
+	/** Turn 1 measures a slow branch TTFT inside a 1ms tool-batch window. */
+	async function primeAdaptiveSkip(h: Harness, clock: { value: number }): Promise<void> {
+		clock.value = 0;
 		streamToolCall(h, streamingPartial(CONDITIONING, 1));
 		await settleFork();
 		// Let the branch actually produce its first token so a TTFT is measured.
 		await new Promise(resolve => setTimeout(resolve, 20));
-		clock = 1; // 1ms window — far below the branch's measured TTFT
+		clock.value = 1; // 1ms window — far below the branch's measured TTFT
 		await h.coordinator.onPrimaryTurnEnd();
 		await h.coordinator.whenSettled();
 		expect(h.ledger.results.length).toBeGreaterThan(0);
 		expect(h.coordinator.forkCount).toBe(1);
+	}
 
-		// Subsequent turns skip.
+	it("skips adaptively when tool batches finish faster than branch first-token", async () => {
+		const clock = { value: 0 };
+		const h = track(harness({ now: () => clock.value, script: { firstDelayMs: 5 }, adaptiveProbeInterval: 100 }));
+		await primeAdaptiveSkip(h, clock);
+
 		for (let turn = 0; turn < 5; turn++) {
 			streamToolCall(h, streamingPartial(CONDITIONING, 10 + turn));
 			await settleFork();
@@ -577,6 +740,29 @@ describe("skip conditions", () => {
 		}
 		expect(h.coordinator.forkCount).toBe(1);
 		expect(h.ledger.skips.map(skip => skip.reason)).toEqual(Array(5).fill("adaptive-window"));
+		await expectNoBranchOutlives(h);
+	});
+
+	it("forks anyway on the probe interval, so the estimate cannot pin the feature off", async () => {
+		// Pinned against the injected interval: deleting the probe branch makes
+		// turn 3 skip and this test fail, which the previous (uninjected,
+		// interval-20) version could not detect.
+		const clock = { value: 0 };
+		const h = track(harness({ now: () => clock.value, script: { firstDelayMs: 5 }, adaptiveProbeInterval: 3 }));
+		await primeAdaptiveSkip(h, clock);
+
+		const forksPerTurn: number[] = [];
+		for (let turn = 0; turn < 6; turn++) {
+			const before = h.coordinator.forkCount;
+			streamToolCall(h, streamingPartial(CONDITIONING, 10 + turn));
+			await settleFork();
+			forksPerTurn.push(h.coordinator.forkCount - before);
+			await h.coordinator.onPrimaryTurnEnd();
+			await h.coordinator.whenSettled();
+		}
+		// skip, skip, PROBE, skip, skip, PROBE
+		expect(forksPerTurn).toEqual([0, 0, 1, 0, 0, 1]);
+		expect(h.ledger.skips.map(skip => skip.reason)).toEqual(Array(4).fill("adaptive-window"));
 		await expectNoBranchOutlives(h);
 	});
 });
@@ -714,10 +900,16 @@ describe("cancellation exit paths", () => {
 		});
 		const provider = fakeProvider();
 		const inner = new BranchCaller({ streamFn: provider.streamFn as never });
+		// A starter whose handles ALL arrive late: the coordinator's cancel walks
+		// an empty array and must still tear down what appears afterwards.
 		const slowStarter: BranchStarter = {
-			async startMany(count, request) {
-				await gate;
-				return inner.startMany(count, request);
+			startManyEager(count, request) {
+				const handles: BranchCallHandle[] = [];
+				const settled = gate.then(async () => {
+					handles.push(...(await inner.startMany(count, request)));
+					return handles;
+				});
+				return { handles, settled };
 			},
 		};
 		const h = track(harness({ starter: slowStarter, script: {} }));
@@ -729,6 +921,33 @@ describe("cancellation exit paths", () => {
 		expect(h.handles.length).toBeGreaterThan(0);
 		await expectCancelled(h, "cancelled");
 		provider.release();
+	});
+
+	it("publishes the first handle synchronously, so a same-tick cancel has something to abort", async () => {
+		const h = track(harness({ script: { firstDelayMs: 200 } }));
+		streamToolCall(h, streamingPartial());
+		// No await: the fork was started inside the event handler above.
+		expect(h.coordinator.activeBranchCount).toBe(1);
+		h.coordinator.cancelActive("session-abort");
+		expect(h.handles).toHaveLength(1);
+		expect(h.handles[0].aborts.length).toBeGreaterThan(0);
+		await expectCancelled(h, "cancelled");
+	});
+
+	it("aborts the branch signal synchronously on every teardown path", async () => {
+		for (const teardown of ["cancelActive", "reset", "dispose", "turnEnd"] as const) {
+			const h = track(harness({ script: { firstDelayMs: 200 } }));
+			streamToolCall(h, streamingPartial());
+			const signal = h.requests[0].signal as AbortSignal;
+			expect(signal.aborted).toBe(false);
+			if (teardown === "cancelActive") h.coordinator.cancelActive("session-abort");
+			else if (teardown === "reset") h.coordinator.reset("reset");
+			else if (teardown === "dispose") h.coordinator.dispose();
+			else void h.coordinator.onPrimaryTurnEnd();
+			// Synchronously, before any await: the queued branches check this
+			// signal before firing, so they never start.
+			expect(signal.aborted).toBe(true);
+		}
 	});
 
 	it("is idempotent", async () => {
@@ -762,13 +981,13 @@ describe("cancellation exit paths", () => {
 describe("re-arm semantics", () => {
 	it("cancels the stale generation and re-arms on a second streaming sequence (Harmony abort-retry)", async () => {
 		const h = track(harness());
-		const first = streamingPartial(CONDITIONING, 1000);
-		streamToolCall(h, first);
+		streamToolCall(h, streamingPartial(CONDITIONING, 1000), { token: "call-1" });
 		await settleFork();
 		expect(h.coordinator.activeGeneration).toBe(1);
 
-		const second = streamingPartial(CONDITIONING, 1000); // same timestamp, new instance
-		streamToolCall(h, second);
+		// The abort-retry `continue`s into a whole new provider call: new stream,
+		// new token, same turn.
+		streamToolCall(h, streamingPartial(CONDITIONING, 1000), { token: "call-2" });
 		await settleFork();
 
 		expect(h.coordinator.forkCount).toBe(2);
@@ -783,18 +1002,24 @@ describe("re-arm semantics", () => {
 		await expectNoBranchOutlives(h);
 	});
 
-	it("does not re-arm on truncate-resume, which re-streams nothing", async () => {
+	it("does not re-arm on truncate-resume, replaying agent-loop's real event set", async () => {
 		const h = track(harness());
-		const partial = streamingPartial();
-		streamToolCall(h, partial);
+		streamToolCall(h, streamingPartial(), { token: "call-1" });
 		await settleFork();
 		const generation = h.coordinator.activeGeneration ?? 0;
 
-		// Truncate-resume replaces the message and emits no assistant stream
-		// events; the coordinator must see nothing at all.
+		// agent-loop's truncate-and-resume path (`if (recovered)`) pushes exactly
+		// this: a `message_start` and a `message_end` for the recovered message,
+		// and NOTHING else — no `toolcall_start`, no content events, no new
+		// provider stream. Per the host contract the wiring either does not arm at
+		// all, or arms with the same token; both must leave the fork alone.
+		h.coordinator.noteStreamStart("call-1"); // same token = same stream
+		// (no assistant content events reach the interceptor on this path)
+
 		expect(h.coordinator.forkCount).toBe(1);
 		expect(h.coordinator.activeGeneration).toBe(generation);
 		expect(h.ledger.drops).toHaveLength(0);
+		expect(h.handles[0].aborts).toHaveLength(0);
 
 		await h.coordinator.onPrimaryTurnEnd();
 		expect(h.folds).toHaveLength(1);
@@ -802,20 +1027,48 @@ describe("re-arm semantics", () => {
 		await expectNoBranchOutlives(h);
 	});
 
-	it("distinguishes same-millisecond message replacement by instance, not timestamp", async () => {
+	it("re-arms on a same-millisecond replacement stream, which timestamps cannot distinguish", async () => {
 		const fixed = () => 4242;
 		const h = track(harness({ now: fixed }));
-		const first = streamingPartial(CONDITIONING, 4242);
-		const second = streamingPartial(CONDITIONING, 4242);
-		streamToolCall(h, first);
+		streamToolCall(h, streamingPartial(CONDITIONING, 4242), { token: "call-1" });
 		await settleFork();
-		streamToolCall(h, second);
+		streamToolCall(h, streamingPartial(CONDITIONING, 4242), { token: "call-2" });
 		await settleFork();
 
 		expect(h.ledger.forks.map(fork => fork.generation)).toEqual([1, 2]);
 		expect(h.ledger.forks[0].forkedAt).toBe(h.ledger.forks[1].forkedAt);
 		expect(h.coordinator.activeGeneration).toBe(2);
 		await h.coordinator.onPrimaryTurnEnd();
+		await expectNoBranchOutlives(h);
+	});
+
+	it("is idempotent for a repeated stream token", async () => {
+		const h = track(harness());
+		streamToolCall(h, streamingPartial(), { token: "call-1" });
+		await settleFork();
+		h.coordinator.noteStreamStart("call-1");
+		h.coordinator.noteStreamStart("call-1");
+		await settleFork();
+
+		expect(h.coordinator.forkCount).toBe(1);
+		expect(h.coordinator.activeGeneration).toBe(1);
+		expect(h.ledger.drops).toHaveLength(0);
+		await h.coordinator.onPrimaryTurnEnd();
+		expect(h.folds).toHaveLength(1);
+		await expectNoBranchOutlives(h);
+	});
+
+	it("cancels a live fork when a new stream is armed before any tool call", async () => {
+		const h = track(harness());
+		streamToolCall(h, streamingPartial(), { token: "call-1" });
+		await settleFork();
+		h.coordinator.noteStreamStart("call-2");
+
+		expect(h.coordinator.activeGeneration).toBeUndefined();
+		expect(h.ledger.drops.map(drop => drop.reason)).toEqual(["superseded"]);
+		expect(h.handles[0].aborts.length).toBeGreaterThan(0);
+		await h.coordinator.onPrimaryTurnEnd();
+		expect(h.folds).toHaveLength(0);
 		await expectNoBranchOutlives(h);
 	});
 
@@ -871,8 +1124,8 @@ describe("failure containment", () => {
 		const h = track(
 			harness({
 				starter: {
-					startMany: async () => {
-						throw new Error("startMany exploded");
+					startManyEager: () => {
+						throw new Error("startManyEager exploded");
 					},
 				},
 			}),
@@ -883,6 +1136,287 @@ describe("failure containment", () => {
 		expect(h.coordinator.activeGeneration).toBeUndefined();
 		await h.coordinator.onPrimaryTurnEnd();
 		expect(h.folds).toHaveLength(0);
+		await expectNoBranchOutlives(h);
+	});
+
+	it("survives a starter whose settled promise rejects", async () => {
+		const provider = fakeProvider();
+		const inner = new BranchCaller({ streamFn: provider.streamFn as never });
+		const h = track(
+			harness({
+				starter: {
+					startManyEager(count, request) {
+						const fanOut = inner.startManyEager(count, request);
+						return { handles: fanOut.handles, settled: Promise.reject(new Error("stagger exploded")) };
+					},
+				},
+			}),
+		);
+		streamToolCall(h, streamingPartial());
+		await settleFork();
+
+		expect(h.coordinator.activeBranchCount).toBe(1);
+		await h.coordinator.onPrimaryTurnEnd();
+		expect(h.folds).toHaveLength(1);
+		await expectNoBranchOutlives(h);
+		provider.release();
+	});
+});
+
+// ── stagger races (gauntlet round 1) ────────────────────────────────────────
+
+describe("stagger races", () => {
+	/**
+	 * A starter that publishes call 1 immediately and holds calls 2..K behind a
+	 * manual gate — the real stagger's shape, made deterministic.
+	 */
+	function staggeredStarter(inner: BranchCaller): {
+		starter: BranchStarter;
+		lift(): void;
+		started: number;
+	} {
+		let lift = () => {};
+		const gate = new Promise<void>(resolve => {
+			lift = resolve;
+		});
+		const state = { started: 0 };
+		const starter: BranchStarter = {
+			startManyEager(count, request) {
+				const handles: BranchCallHandle[] = [inner.start(request)];
+				state.started++;
+				const settled = gate.then(() => {
+					// Exactly what `startManyEager` does after its gate lifts.
+					if (request.signal?.aborted) return handles;
+					for (let index = 1; index < count; index++) {
+						handles.push(inner.start(request));
+						state.started++;
+					}
+					return handles;
+				});
+				return { handles, settled };
+			},
+		};
+		return {
+			starter,
+			lift: () => lift(),
+			get started() {
+				return state.started;
+			},
+		};
+	}
+
+	it("turn end during the stagger wait harvests branch 1 and never starts the rest", async () => {
+		const provider = fakeProvider();
+		const inner = new BranchCaller({ streamFn: provider.streamFn as never });
+		const staggered = staggeredStarter(inner);
+		const h = track(
+			harness({
+				starter: staggered.starter,
+				overrides: { "secondThought.branchCount": 2 },
+			}),
+		);
+		streamToolCall(h, streamingPartial());
+		// Branch 1 exists on the same tick; branch 2 is still behind the gate.
+		expect(h.coordinator.activeBranchCount).toBe(1);
+		expect(staggered.started).toBe(1);
+
+		// The tool batch beat the branch TTFT — the exact case that used to
+		// harvest nothing and then start K−1 calls into a finished turn.
+		await h.coordinator.onPrimaryTurnEnd();
+		staggered.lift();
+		await settleFork();
+		await h.coordinator.whenSettled();
+
+		expect(staggered.started).toBe(1);
+		expect(h.folds).toHaveLength(1);
+		expect(h.folds[0].units.map(unit => unit[0])).toEqual(["check", "recall"]);
+		expect(h.ledger.results).toHaveLength(1);
+		await expectNoBranchOutlives(h);
+		provider.release();
+	});
+
+	it("cancel during the stagger wait never starts the remaining branches", async () => {
+		const provider = fakeProvider();
+		const inner = new BranchCaller({ streamFn: provider.streamFn as never });
+		const staggered = staggeredStarter(inner);
+		const h = track(harness({ starter: staggered.starter, overrides: { "secondThought.branchCount": 3 } }));
+		streamToolCall(h, streamingPartial());
+		h.coordinator.cancelActive("session-abort");
+		staggered.lift();
+		await settleFork();
+
+		expect(staggered.started).toBe(1);
+		expect(h.handles).toHaveLength(1);
+		// Attributed exactly once, even though the cancel path and the stagger
+		// tail both reached the same handle.
+		await h.coordinator.whenSettled();
+		expect(h.ledger.results).toHaveLength(1);
+		await expectNoBranchOutlives(h);
+		provider.release();
+	});
+
+	it("real BranchCaller.startManyEager publishes handle 0 before the gate and honours a sync abort", async () => {
+		const provider = fakeProvider({ firstDelayMs: 50 });
+		const h = track(harness({ script: { firstDelayMs: 50 }, overrides: { "secondThought.branchCount": 3 } }));
+		streamToolCall(h, streamingPartial());
+		expect(h.coordinator.activeBranchCount).toBe(1);
+		expect(h.provider.calls).toHaveLength(1);
+
+		h.coordinator.cancelActive("session-abort");
+		await new Promise(resolve => setTimeout(resolve, 80));
+		// The gate lifted after the abort; branches 2 and 3 were never sent.
+		expect(h.provider.calls).toHaveLength(1);
+		await expectNoBranchOutlives(h);
+		provider.release();
+	});
+});
+
+// ── state-write guards (gauntlet round 1) ───────────────────────────────────
+
+describe("state-write guards", () => {
+	it("refuses to deliver a fold when reset lands during the harvest", async () => {
+		// `reset` is wired for model change, which does NOT move the history
+		// epoch — the history check alone cannot see this.
+		const h = track(
+			harness({
+				script: { firstDelayMs: 15 },
+				graceMs: 200,
+				deliverHarvest: () => {
+					throw new Error("delivery must not be reached");
+				},
+			}),
+		);
+		streamToolCall(h, streamingPartial());
+		await settleFork();
+
+		const turnEnd = h.coordinator.onPrimaryTurnEnd();
+		h.coordinator.reset("reset"); // model change, mid-grace
+		await turnEnd;
+
+		expect(h.folds).toHaveLength(0);
+		expect(h.ledger.harvests).toHaveLength(0);
+		expect(h.ledger.drops.map(drop => drop.reason)).toContain("coordinator-epoch");
+		await expectNoBranchOutlives(h);
+	});
+
+	it("does not let a post-reset finalizer write the adaptive EMAs", async () => {
+		const clock = { value: 0 };
+		// The branch emits its first token (so a TTFT exists to be measured) and
+		// then wedges, so it can only settle inside the DETACHED finalizer — the
+		// window in which `reset()` routinely lands.
+		const h = track(
+			harness({
+				now: () => clock.value,
+				script: { firstDelayMs: 1, wedge: true },
+				graceMs: 1,
+				finalizerTimeoutMs: 2_000,
+			}),
+		);
+		streamToolCall(h, streamingPartial());
+		await settleFork();
+		await new Promise(resolve => setTimeout(resolve, 20)); // first token streamed
+		clock.value = 5;
+		await h.coordinator.onPrimaryTurnEnd(); // grace 1ms — the wedged branch misses it
+		expect(h.coordinator.adaptiveEmas.branchTtftMs).toBeUndefined();
+
+		h.coordinator.reset("reset"); // model change while the finalizer is in flight
+		h.provider.release();
+		await h.coordinator.whenSettled();
+
+		// The usage the branch already incurred is still attributed; the adaptive
+		// state, which steers the NEXT conversation, is not touched.
+		expect(h.ledger.results).toHaveLength(1);
+		expect(h.ledger.results[0].ttftMs).toBeGreaterThan(0);
+		expect(h.coordinator.adaptiveEmas).toEqual({ toolBatchMs: undefined, branchTtftMs: undefined });
+		await expectNoBranchOutlives(h);
+	});
+
+	it("does not let a rewound turn's window steer the adaptive skip", async () => {
+		const clock = { value: 0 };
+		const h = track(harness({ now: () => clock.value }));
+		streamToolCall(h, streamingPartial());
+		await settleFork();
+		clock.value = 9999;
+		h.epoch.value = 2; // rewind under the fork
+		await h.coordinator.onPrimaryTurnEnd();
+
+		expect(h.ledger.drops.map(drop => drop.reason)).toEqual(["history-epoch"]);
+		expect(h.coordinator.adaptiveEmas.toolBatchMs).toBeUndefined();
+		await expectNoBranchOutlives(h);
+	});
+
+	it("records the tool-batch window on a surviving harvest", async () => {
+		const clock = { value: 0 };
+		const h = track(harness({ now: () => clock.value }));
+		streamToolCall(h, streamingPartial());
+		await settleFork();
+		clock.value = 1234;
+		await h.coordinator.onPrimaryTurnEnd();
+
+		expect(h.folds[0].windowMs).toBe(1234);
+		expect(h.coordinator.adaptiveEmas.toolBatchMs).toBe(1234);
+		await expectNoBranchOutlives(h);
+	});
+});
+
+// ── bounds (gauntlet round 1) ───────────────────────────────────────────────
+
+describe("bounds", () => {
+	it("keeps the loop on the grace even when the finalizer bound is production-magnitude", async () => {
+		// The finalizer is 10s in production; the invariant is that the primary
+		// loop never observes it. Real timers here would hang the suite for 10s
+		// exactly when the invariant is broken, which is the point.
+		const clock = { value: 0 };
+		const h = track(
+			harness({
+				now: () => clock.value,
+				script: { wedge: true },
+				graceMs: 30,
+				finalizerTimeoutMs: FINALIZER_TIMEOUT_MS,
+			}),
+		);
+		expect(FINALIZER_TIMEOUT_MS).toBe(10_000);
+		streamToolCall(h, streamingPartial());
+		await settleFork();
+
+		const startedAt = Date.now();
+		await h.coordinator.onPrimaryTurnEnd();
+		const elapsed = Date.now() - startedAt;
+
+		expect(elapsed).toBeLessThan(1_000);
+		expect(h.folds).toHaveLength(0);
+		expect(h.ledger.drops.map(drop => drop.reason)).toEqual(["no-settled-branches"]);
+		expect(h.coordinator.activeBranchCount).toBe(0);
+		// Releasing the wedge lets the finalizer settle well inside its bound, so
+		// the usage the branch incurred still reaches the ledger.
+		h.provider.release();
+		await h.coordinator.whenSettled();
+		expect(h.ledger.results).toHaveLength(1);
+	});
+
+	it("passes the required cache-identity stream option keys through to the provider", async () => {
+		const streamOptions = {
+			apiKey: "k",
+			reasoning: { effort: "high" },
+			hideThinkingSummary: true,
+			cacheRetention: "1h",
+			serviceTier: "priority",
+			// Cache-hostile fields 02 must strip.
+			toolChoice: "required",
+			anthropicCacheRefresh: true,
+		} as unknown as BranchStreamOptions;
+		const h = track(harness({ streamOptions }));
+		streamToolCall(h, streamingPartial());
+		await settleFork();
+
+		const sent = h.provider.calls[0].options as Record<string, unknown>;
+		expect(sent.reasoning).toEqual({ effort: "high" });
+		expect(sent.hideThinkingSummary).toBe(true);
+		expect(sent.cacheRetention).toBe("1h");
+		expect(sent.serviceTier).toBe("priority");
+		expect(sent.toolChoice).toBeUndefined();
+		expect(sent.anthropicCacheRefresh).toBeUndefined();
+		await h.coordinator.onPrimaryTurnEnd();
 		await expectNoBranchOutlives(h);
 	});
 });
