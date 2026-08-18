@@ -673,6 +673,14 @@ export class SecondThoughtCoordinator {
 				if (!active.cancelled && this.#active?.generation === active.generation) return;
 				// Cancelled mid-stagger: abort anything that arrived late and drain
 				// it for the ledger. Nothing here can produce a fold.
+				//
+				// This tail runs at the FIRST AWAIT of whichever teardown path
+				// resolved the gate, so it must never adopt a handle the teardown
+				// already published — `#observeResults` claims through the fork's
+				// `observed` set, which `cancelActive`/`#harvest` fill synchronously,
+				// so only handles APPENDED after teardown are drained here. Stealing
+				// an already-published handle would sink its units into this
+				// ledger-only finalizer instead of the grace harvest.
 				for (const handle of handles) handle.abort("second-thought-cancelled");
 				this.#observeResults(active, handles);
 			})
@@ -781,6 +789,15 @@ export class SecondThoughtCoordinator {
 		// Snapshotted here: the stagger tail can still append to the live array,
 		// and a handle that appears after the abort has nothing to contribute.
 		const handles = [...fork.handles];
+		// CLAIMED SYNCHRONOUSLY, before the first await. The turn-end abort
+		// resolves `startManyEager`'s stagger gate, so the fan-out's settled tail
+		// runs at the very next await below; it sees `cancelled === true` and would
+		// otherwise claim these same handles into the ledger-only finalizer, and
+		// the grace claim would then find nothing — dropping, as
+		// `no-settled-branches`, every unit that settles inside the grace. Claiming
+		// first leaves the tail only the handles it appends AFTER teardown, which
+		// by construction can never contribute a fold.
+		const claimed = this.#claimUnobserved(fork, handles);
 
 		const harvestedAt = this.#now();
 		const windowMs = Math.max(0, harvestedAt - fork.forkedAt);
@@ -789,7 +806,7 @@ export class SecondThoughtCoordinator {
 
 		const settled: BranchCallResult[] = [];
 		const pending: BranchCallHandle[] = [];
-		for (const handle of this.#claimUnobserved(fork, handles)) {
+		for (const handle of claimed) {
 			const result = handle.settledResult();
 			if (result) settled.push(result);
 			else pending.push(handle);
@@ -903,9 +920,17 @@ export class SecondThoughtCoordinator {
 	 * would make the ledger a liar. The adaptive state is the opposite: it steers
 	 * future decisions, so a fork from a torn-down conversation must not touch it
 	 * (a detached finalizer routinely lands after `reset()`).
+	 *
+	 * "Torn down" is BOTH epochs. The coordinator epoch covers reset/dispose
+	 * (model change, session switch); the history epoch covers rewind /
+	 * `replaceMessages` / compaction, which move the conversation without
+	 * resetting the coordinator. A rewound fork's TTFT describes a branch off a
+	 * conversation that no longer exists, and its fold is already dropped as
+	 * `history-epoch` — letting it steer the adaptive window would be the same
+	 * measurement leak by another door.
 	 */
 	#recordResults(fork: ActiveFork, results: readonly BranchCallResult[]): void {
-		const writable = this.#stateWritable(fork);
+		const writable = this.#stateWritable(fork) && fork.epoch === this.#historyEpoch();
 		for (const result of results) {
 			if (writable && typeof result.ttftMs === "number" && result.ttftMs >= 0) {
 				this.#branchTtftEmaMs = ema(this.#branchTtftEmaMs, result.ttftMs);
@@ -980,6 +1005,22 @@ export class SecondThoughtCoordinator {
 	/** Whether adaptive/delivery state may still be written on this fork's behalf. */
 	#stateWritable(fork: ActiveFork): boolean {
 		return !this.#disposed && fork.coordEpoch === this.#coordEpoch;
+	}
+
+	/**
+	 * The host's history epoch, guarded.
+	 *
+	 * Read from the detached finalizer as well as the harvest, and the finalizer
+	 * is not inside anyone's `try` — a host that throws here must cost a state
+	 * write, never an unhandled rejection. `NaN` never equals a fork's epoch, so
+	 * the failure mode is "refuse the adaptive write", which is the safe side.
+	 */
+	#historyEpoch(): number {
+		try {
+			return this.#host.historyEpoch();
+		} catch {
+			return Number.NaN;
+		}
 	}
 
 	/** Await every detached finalizer. Tests only — the loop must never call this. */

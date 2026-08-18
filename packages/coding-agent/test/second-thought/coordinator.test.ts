@@ -126,6 +126,17 @@ interface StreamScript {
 	wedge?: boolean;
 	/** Delay before the first delta, ms. */
 	firstDelayMs?: number;
+	/**
+	 * Deliver the scripted deltas even after the caller aborted, then settle
+	 * `aborted`.
+	 *
+	 * Models the real shape of a mid-stream teardown: `controller.abort()` does
+	 * not empty the socket, so chunks already in flight are still read by the
+	 * `for await` loop and their text is still harvestable. Without this the fake
+	 * provider drops everything the instant the signal trips, which makes it
+	 * impossible to express "a branch settles with units INSIDE the grace".
+	 */
+	deltasSurviveAbort?: boolean;
 }
 
 interface FakeProvider {
@@ -145,7 +156,7 @@ function fakeProvider(script: StreamScript = {}): FakeProvider {
 		void (async () => {
 			if (script.firstDelayMs) await new Promise(resolve => setTimeout(resolve, script.firstDelayMs));
 			for (const delta of script.deltas ?? [BRANCH_TEXT]) {
-				if (signal?.aborted) break;
+				if (signal?.aborted && !script.deltasSurviveAbort) break;
 				text += delta;
 				stream.push({ type: "text_delta", contentIndex: 0, delta, partial: assistantMessage(text) });
 				await Promise.resolve();
@@ -1169,6 +1180,13 @@ describe("stagger races", () => {
 	/**
 	 * A starter that publishes call 1 immediately and holds calls 2..K behind a
 	 * manual gate — the real stagger's shape, made deterministic.
+	 *
+	 * The gate is bounded by `request.signal` exactly as the real
+	 * `#awaitStaggerGate` is. That fidelity is load-bearing rather than
+	 * decorative: a fake whose `settled` can only resolve on `lift()` never runs
+	 * its tail during a teardown, so it cannot see the tail race the harvest for
+	 * the same handles — which is precisely how the K=2 turn-end test read green
+	 * over a real drop.
 	 */
 	function staggeredStarter(inner: BranchCaller): {
 		starter: BranchStarter;
@@ -1184,7 +1202,13 @@ describe("stagger races", () => {
 			startManyEager(count, request) {
 				const handles: BranchCallHandle[] = [inner.start(request)];
 				state.started++;
-				const settled = gate.then(() => {
+				const signal = request.signal;
+				const aborted = new Promise<void>(resolve => {
+					if (!signal) return;
+					if (signal.aborted) resolve();
+					else signal.addEventListener("abort", () => resolve(), { once: true });
+				});
+				const settled = Promise.race([gate, aborted]).then(() => {
 					// Exactly what `startManyEager` does after its gate lifts.
 					if (request.signal?.aborted) return handles;
 					for (let index = 1; index < count; index++) {
@@ -1253,6 +1277,44 @@ describe("stagger races", () => {
 		expect(h.ledger.results).toHaveLength(1);
 		await expectNoBranchOutlives(h);
 		provider.release();
+	});
+
+	it("real startManyEager: K=2 turn end during the gate still folds handle 0's units", async () => {
+		// The round-2 HIGH, end to end against the REAL stagger gate rather than a
+		// fake one. Turn end aborts synchronously, which is one of the three things
+		// the real gate is bounded by, so `fanOut.settled` resolves at the harvest's
+		// FIRST await. If the harvest has not already claimed handle 0 by then, the
+		// settled tail claims it into the ledger-only finalizer and the fold is lost
+		// as `no-settled-branches` — silently, since the ledger still shows a paid
+		// branch result.
+		const h = track(
+			harness({
+				// First token deliberately later than the tool batch: the gate is
+				// still open at turn end, so branch 2 is never sent. The chunks
+				// already in flight land after the abort and are still harvestable.
+				script: { firstDelayMs: 5, deltasSurviveAbort: true },
+				graceMs: 200,
+				overrides: { "secondThought.branchCount": 2 },
+			}),
+		);
+		streamToolCall(h, streamingPartial());
+		expect(h.coordinator.activeBranchCount).toBe(1);
+		expect(h.provider.calls).toHaveLength(1);
+
+		await h.coordinator.onPrimaryTurnEnd();
+
+		// Branch 2 never started: the gate was bounded by the turn-end abort.
+		expect(h.provider.calls).toHaveLength(1);
+		// Handle 0 settled inside the 200ms grace, so its units MUST fold.
+		expect(h.folds).toHaveLength(1);
+		expect(h.folds[0].units.map(unit => unit[0])).toEqual(["check", "recall"]);
+		expect(h.folds[0].settledCount).toBe(1);
+		expect(h.ledger.drops).toHaveLength(0);
+		// And exactly one ledger attribution — the tail must not have drained a
+		// handle the harvest already owned.
+		expect(h.ledger.results).toHaveLength(1);
+		await expectNoBranchOutlives(h);
+		expect(h.ledger.results).toHaveLength(1);
 	});
 
 	it("real BranchCaller.startManyEager publishes handle 0 before the gate and honours a sync abort", async () => {
@@ -1342,7 +1404,16 @@ describe("state-write guards", () => {
 
 		expect(h.ledger.drops.map(drop => drop.reason)).toEqual(["history-epoch"]);
 		expect(h.coordinator.adaptiveEmas.toolBatchMs).toBeUndefined();
+		// Both EMAs, not just the tool-batch one. A history-epoch move is a
+		// teardown the coordinator epoch cannot see, and the branch DID settle with
+		// a real TTFT here — gating that write on the coordinator epoch alone let a
+		// rewound turn steer the adaptive window through the other door.
+		expect(h.coordinator.adaptiveEmas.branchTtftMs).toBeUndefined();
+		// The money the branch already cost is still attributed: the split between
+		// ledger truth and adaptive state is the documented policy.
+		expect(h.ledger.results).toHaveLength(1);
 		await expectNoBranchOutlives(h);
+		expect(h.coordinator.adaptiveEmas).toEqual({ toolBatchMs: undefined, branchTtftMs: undefined });
 	});
 
 	it("records the tool-batch window on a surviving harvest", async () => {

@@ -600,6 +600,15 @@ export class BranchCaller {
 	 * the caller aborted or call 1 settled `aborted`/`error`: firing K−1 more
 	 * calls into a turn that is being torn down, or against a provider that
 	 * just failed, spends real money for output nobody will harvest.
+	 *
+	 * Identity, post-delegation: this now awaits {@link startManyEager}, so the
+	 * array it resolves to is that fan-out's LIVE array — the same object as
+	 * {@link EagerBranchFanOut.handles}, not a fresh copy. By the time the promise
+	 * resolves the stagger has decided, so the array no longer grows and a caller
+	 * that only awaits `startMany` cannot observe the difference. A caller that
+	 * holds both must not assume they are distinct arrays: mutating the result
+	 * mutates the fan-out's view, and vice versa. Copy at the use site if you need
+	 * a stable snapshot.
 	 */
 	async startMany(count: number, request: BranchCallRequest): Promise<BranchCallHandle[]> {
 		return await this.startManyEager(count, request).settled;
