@@ -6,12 +6,16 @@ import { ATOM_NAMES, COMBINED_BRANCH_PROMPT, ReflectAtom } from "../../src/sessi
 import {
 	BranchCaller,
 	type BranchCallRequest,
+	type BranchStreamOptions,
+	buildBranchConditioningPrompt,
 	buildBranchContext,
 	buildBranchSessionId,
 	buildBranchStreamOptions,
 	DEFAULT_BRANCH_MAX_TOKENS,
+	DEFAULT_STAGGER_TIMEOUT_MS,
 	normalizeBranchAtoms,
 	snapshotBranchContext,
+	truncateToUnitCap,
 } from "../../src/session/second-thought/branch-call";
 
 const MODEL = {
@@ -155,6 +159,17 @@ function scriptedStreamFn(
 	};
 }
 
+function hostOptions(extra: Partial<SimpleStreamOptions> = {}): BranchStreamOptions {
+	return {
+		apiKey: "k",
+		reasoning: Effort.Medium,
+		hideThinkingSummary: undefined,
+		cacheRetention: undefined,
+		serviceTier: "auto",
+		...extra,
+	} as BranchStreamOptions;
+}
+
 function request(overrides: Partial<BranchCallRequest> = {}): BranchCallRequest {
 	const snapshot = snapshotBranchContext(mainCallContext(), MODEL, 100);
 	return {
@@ -163,7 +178,7 @@ function request(overrides: Partial<BranchCallRequest> = {}): BranchCallRequest 
 		conditioningText: "I should check whether the test is flaky.",
 		cacheSessionId: "sess-1",
 		promptCacheKey: "cache-1",
-		streamOptions: { apiKey: "k", reasoning: Effort.Medium, serviceTier: "auto" } as SimpleStreamOptions,
+		streamOptions: hostOptions(),
 		...overrides,
 	};
 }
@@ -186,6 +201,25 @@ describe("branch snapshot", () => {
 		expect(snapshot.modelId).toBe(MODEL.id);
 		expect(snapshot.forkedAt).toBe(100);
 	});
+
+	it("preserves binary payloads instead of JSON-stripping them into index objects", () => {
+		const context = mainCallContext();
+		const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+		(context.messages[0] as unknown as { providerPayload: unknown }).providerPayload = { raw: bytes };
+
+		const snapshot = snapshotBranchContext(context, MODEL, 100);
+		const copied = (snapshot.messages[0] as unknown as { providerPayload: { raw: Uint8Array } }).providerPayload.raw;
+
+		expect(copied).toBeInstanceOf(Uint8Array);
+		expect(copied).not.toBe(bytes);
+		expect(Array.from(copied)).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+	});
+
+	it("throws rather than lossily copying a context structuredClone cannot handle", () => {
+		const context = mainCallContext();
+		(context.messages[0] as unknown as { hook: unknown }).hook = () => "not cloneable";
+		expect(() => snapshotBranchContext(context, MODEL, 100)).toThrow(/not structured-cloneable/);
+	});
 });
 
 describe("branch request shape", () => {
@@ -193,7 +227,6 @@ describe("branch request shape", () => {
 		const main = mainCallContext();
 		const snapshot = snapshotBranchContext(main, MODEL, 100);
 		const branch = buildBranchContext(snapshot, {
-			model: MODEL,
 			conditioningText: "conditioning",
 			now: 200,
 		});
@@ -202,36 +235,65 @@ describe("branch request shape", () => {
 		expect(JSON.stringify(branch.tools)).toBe(JSON.stringify(main.tools));
 		const prefix = branch.messages.slice(0, main.messages.length);
 		expect(JSON.stringify(prefix)).toBe(JSON.stringify(main.messages));
-		expect(branch.messages).toHaveLength(main.messages.length + 2);
+		expect(branch.messages).toHaveLength(main.messages.length + 1);
 	});
 
-	it("appends an assistant conditioning message and the combined-atom user prompt", () => {
+	it("appends exactly one synthetic user message carrying the conditioning and combined prompt", () => {
 		const snapshot = snapshotBranchContext(mainCallContext(), MODEL, 100);
 		const branch = buildBranchContext(snapshot, {
-			model: MODEL,
 			conditioningText: "conditioning",
 			now: 200,
 		});
-		const [assistant, user] = branch.messages.slice(-2) as [AssistantMessage, Message];
+		const suffix = branch.messages.slice(-1) as Message[];
 
-		expect(assistant.role).toBe("assistant");
-		expect(assistant.model).toBe(MODEL.id);
-		expect(assistant.content).toEqual([{ type: "text", text: "conditioning" }]);
+		expect(suffix).toHaveLength(1);
+		const [user] = suffix;
 		expect(user.role).toBe("user");
-		expect(user).toMatchObject({ synthetic: true, content: [{ type: "text", text: COMBINED_BRANCH_PROMPT }] });
+		// The synthetic-assistant shape is what diverged the wire prefix; nothing
+		// after the snapshot may be an assistant message.
+		expect(branch.messages.filter(m => m.role === "assistant")).toHaveLength(
+			snapshot.messages.filter(m => m.role === "assistant").length,
+		);
+		expect(user).toMatchObject({ synthetic: true, attribution: "agent" });
+		const text = (user.content as { text: string }[])[0].text;
+		expect(text).toContain("conditioning");
+		expect(text).toContain(COMBINED_BRANCH_PROMPT);
+		expect(text).toBe(buildBranchConditioningPrompt("conditioning"));
+	});
+
+	it("falls back to the bare combined prompt when there is no conditioning text", () => {
+		expect(buildBranchConditioningPrompt("   ")).toBe(COMBINED_BRANCH_PROMPT);
+	});
+
+	it("deep-copies per outbound context so two branches never share object refs", () => {
+		const snapshot = snapshotBranchContext(mainCallContext(), MODEL, 100);
+		const a = buildBranchContext(snapshot, { conditioningText: "a", now: 200 });
+		const b = buildBranchContext(snapshot, { conditioningText: "b", now: 200 });
+
+		expect(a.messages[0]).not.toBe(b.messages[0]);
+		expect(a.messages[0]).not.toBe(snapshot.messages[0]);
+		expect(a.tools).not.toBe(b.tools);
+		expect(a.systemPrompt).not.toBe(snapshot.systemPrompt);
+
+		// A host hook mutating what it was handed cannot reach the other call.
+		((a.messages[1] as AssistantMessage).content[0] as { text: string }).text = "MUTATED";
+		expect(((b.messages[1] as AssistantMessage).content[0] as { text: string }).text).toBe("looking");
+		expect(((snapshot.messages[1] as AssistantMessage).content[0] as { text: string }).text).toBe("looking");
 	});
 
 	it("strips cache-hostile options and keeps the primary prompt cache key", () => {
 		const signal = new AbortController().signal;
 		const options = buildBranchStreamOptions(
 			request({
-				streamOptions: {
-					apiKey: "k",
+				streamOptions: hostOptions({
 					reasoning: Effort.High,
+					hideThinkingSummary: true,
+					cacheRetention: "long",
 					toolChoice: "none",
 					disableReasoning: true,
+					forceReasoningOff: true,
 					anthropicCacheRefresh: true,
-				} as SimpleStreamOptions,
+				}),
 			}),
 			"sess-1:side:reflect:1",
 			signal,
@@ -239,8 +301,12 @@ describe("branch request shape", () => {
 
 		expect(options.toolChoice).toBeUndefined();
 		expect(options.disableReasoning).toBeUndefined();
+		expect(options.forceReasoningOff).toBeUndefined();
 		expect(options.anthropicCacheRefresh).toBeUndefined();
+		expect("forceReasoningOff" in options).toBe(false);
 		expect(options.reasoning).toBe(Effort.High);
+		expect(options.hideThinkingSummary).toBe(true);
+		expect(options.cacheRetention).toBe("long");
 		expect(options.promptCacheKey).toBe("cache-1");
 		expect(options.maxTokens).toBe(DEFAULT_BRANCH_MAX_TOKENS);
 		expect(options.sessionId).toBe("sess-1:side:reflect:1");
@@ -462,5 +528,237 @@ describe("BranchCaller stagger", () => {
 	it("returns nothing for K<=0", async () => {
 		const caller = new BranchCaller({ streamFn: scriptedStreamFn(["a"]) });
 		expect(await caller.startMany(0, request())).toEqual([]);
+	});
+
+	it("does not wait forever when call 1 never emits a text delta", async () => {
+		// `start` and thinking events must NOT open the gate: they fire before the
+		// provider has produced cacheable output. Only the timeout releases here.
+		const calls: ScriptedCall[] = [];
+		const controllers: AbortController[] = [];
+		const streamFn = async (model: Model, context: Context, options: SimpleStreamOptions = {}) => {
+			calls.push({ model, context, options });
+			const stream = new AssistantMessageEventStream();
+			const local = new AbortController();
+			controllers.push(local);
+			void (async () => {
+				stream.push({ type: "start", partial: doneMessage("") });
+				stream.push({ type: "thinking_delta", contentIndex: 0, delta: "hmm", partial: doneMessage("") });
+				await new Promise<void>(resolve => {
+					if (options.signal?.aborted) return resolve();
+					options.signal?.addEventListener("abort", () => resolve(), { once: true });
+					local.signal.addEventListener("abort", () => resolve(), { once: true });
+				});
+				const message = doneMessage("");
+				stream.push({ type: "done", reason: "stop", message });
+				stream.end(message);
+			})();
+			return stream;
+		};
+
+		const caller = new BranchCaller({ streamFn });
+		const started = Date.now();
+		const handles = await caller.startMany(
+			3,
+			request({ streamOptions: hostOptions({ streamFirstEventTimeoutMs: 25 }) }),
+		);
+
+		expect(handles).toHaveLength(3);
+		expect(Date.now() - started).toBeLessThan(DEFAULT_STAGGER_TIMEOUT_MS);
+		for (const local of controllers) local.abort();
+		await Promise.all(handles.map(handle => handle.result));
+	});
+
+	it("does not fan out when the caller aborted while the gate was open", async () => {
+		const calls: ScriptedCall[] = [];
+		const controller = new AbortController();
+		const streamFn = async (model: Model, context: Context, options: SimpleStreamOptions = {}) => {
+			calls.push({ model, context, options });
+			const stream = new AssistantMessageEventStream();
+			void (async () => {
+				stream.push({ type: "start", partial: doneMessage("") });
+				await new Promise<void>(resolve => {
+					if (options.signal?.aborted) return resolve();
+					options.signal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				stream.push({
+					type: "error",
+					reason: "aborted",
+					error: doneMessage("", { stopReason: "aborted", errorMessage: "aborted" }),
+				});
+				stream.end();
+			})();
+			return stream;
+		};
+
+		const caller = new BranchCaller({ streamFn });
+		const pending = caller.startMany(4, request({ signal: controller.signal }));
+		await Promise.resolve();
+		controller.abort();
+		const handles = await pending;
+
+		expect(handles).toHaveLength(1);
+		expect(calls).toHaveLength(1);
+		expect((await handles[0]!.result).outcome).toBe("aborted");
+	});
+
+	it("does not fan out when call 1 fails before producing a token", async () => {
+		const calls: ScriptedCall[] = [];
+		const caller = new BranchCaller({ streamFn: scriptedStreamFn([], { calls, finish: "error" }) });
+		const handles = await caller.startMany(3, request());
+		expect(handles).toHaveLength(1);
+		expect(calls).toHaveLength(1);
+		expect((await handles[0]!.result).outcome).toBe("error");
+	});
+});
+
+describe("BranchCaller never throws", () => {
+	const hooks = [
+		["obfuscateContext", { obfuscateContext: () => throwing("obfuscate exploded") }],
+		["prepareStreamOptions", { prepareStreamOptions: () => throwing("prepare exploded") }],
+		["deobfuscateText", { deobfuscateText: () => throwing("deobfuscate exploded") }],
+	] as const;
+
+	function throwing(message: string): never {
+		throw new Error(message);
+	}
+
+	for (const [name, host] of hooks) {
+		it(`settles as error when the host ${name} hook throws`, async () => {
+			const caller = new BranchCaller({
+				streamFn: scriptedStreamFn(['<reflect type="check">a</reflect>']),
+				...(host as object),
+			});
+			const result = await caller.run(request());
+			expect(result.outcome).toBe("error");
+			expect(result.error).toMatch(/exploded/);
+		});
+	}
+
+	it("settles as error when atoms are not iterable", async () => {
+		const caller = new BranchCaller({ streamFn: scriptedStreamFn(["a"]) });
+		const result = await caller.run(request({ atoms: 42 as unknown as string[] }));
+		expect(result.outcome).toBe("error");
+	});
+
+	it("settles as error when the snapshot cannot be cloned for the outbound context", async () => {
+		const snapshot = snapshotBranchContext(mainCallContext(), MODEL, 100);
+		(snapshot.messages[0] as unknown as { hook: unknown }).hook = () => "not cloneable";
+		const caller = new BranchCaller({ streamFn: scriptedStreamFn(["a"]) });
+		const result = await caller.run(request({ snapshot }));
+		expect(result.outcome).toBe("error");
+		expect(result.error).toMatch(/not structured-cloneable/);
+	});
+
+	it("does not throw synchronously from start() when the id source throws", async () => {
+		const caller = new BranchCaller({
+			streamFn: scriptedStreamFn(["a"]),
+			nextSideCallId: () => {
+				throw new Error("snowflake exploded");
+			},
+		});
+		let handle: ReturnType<BranchCaller["start"]> | undefined;
+		expect(() => {
+			handle = caller.start(request());
+		}).not.toThrow();
+		// A throwing id source falls back to the random suffix rather than failing
+		// the branch, so the call still runs.
+		const result = await handle!.result;
+		expect(result.outcome).toBe("completed");
+		expect(result.sessionId.startsWith("sess-1:side:reflect:")).toBe(true);
+	});
+
+	it("does not throw synchronously from start() when the caller signal rejects listeners", async () => {
+		const signal = {
+			aborted: false,
+			reason: undefined,
+			addEventListener: () => {
+				throw new Error("listener exploded");
+			},
+			removeEventListener: () => {},
+		} as unknown as AbortSignal;
+		const caller = new BranchCaller({ streamFn: scriptedStreamFn(["a"]) });
+		let handle: ReturnType<BranchCaller["start"]> | undefined;
+		expect(() => {
+			handle = caller.start(request({ signal }));
+		}).not.toThrow();
+		const result = await handle!.result;
+		expect(result.outcome).toBe("error");
+		expect(result.error).toBe("listener exploded");
+		expect(handle!.settledResult()?.outcome).toBe("error");
+	});
+
+	it("survives a throwing onTextDelta observer", async () => {
+		const caller = new BranchCaller({ streamFn: scriptedStreamFn(['<reflect type="check">a</reflect>']) });
+		const result = await caller.run(
+			request({
+				onTextDelta: () => {
+					throw new Error("tui exploded");
+				},
+			}),
+		);
+		expect(result.outcome).toBe("completed");
+		expect(result.units).toEqual([["check", "a"]]);
+	});
+});
+
+describe("BranchCaller usage and outcome accounting", () => {
+	it("surfaces the last streamed partial usage when an abort leaves no terminal usage", async () => {
+		const controller = new AbortController();
+		const streamFn = async (_model: Model, _context: Context, options: SimpleStreamOptions = {}) => {
+			const stream = new AssistantMessageEventStream();
+			void (async () => {
+				stream.push({ type: "text_delta", contentIndex: 0, delta: "partial", partial: doneMessage("partial") });
+				await new Promise<void>(resolve => {
+					if (options.signal?.aborted) return resolve();
+					options.signal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				// No terminal event at all: the transport just goes away.
+				stream.end();
+			})();
+			return stream;
+		};
+
+		const caller = new BranchCaller({ streamFn });
+		const handle = caller.start(request({ signal: controller.signal }));
+		await handle.firstToken;
+		controller.abort();
+		const result = await handle.result;
+
+		expect(result.outcome).toBe("aborted");
+		expect(result.usage?.cacheRead).toBe(5000);
+		expect(result.text).toBe("partial");
+	});
+
+	it("keeps 'completed' when the abort lands after the provider finished naturally", async () => {
+		const caller = new BranchCaller({ streamFn: scriptedStreamFn(['<reflect type="check">done</reflect>']) });
+		const handle = caller.start(request());
+		const result = await handle.result;
+		handle.abort();
+		expect(result.outcome).toBe("completed");
+		expect((await handle.result).outcome).toBe("completed");
+	});
+
+	it("truncates a multi-unit delta back to the cap and still records terminal usage", async () => {
+		const overshoot = Array.from({ length: 5 }, (_, i) => `<reflect type="check">u${i}</reflect>`).join("");
+		const caller = new BranchCaller({ streamFn: scriptedStreamFn([overshoot, "trailing garbage"]) });
+
+		const result = await caller.run(request({ harvestCapPerAtom: 1, atoms: ["check", "recall"] }));
+
+		expect(result.outcome).toBe("unitCap");
+		expect(result.unitCount).toBe(2);
+		expect(result.units).toEqual([
+			["check", "u0"],
+			["check", "u1"],
+		]);
+		expect(result.text).toBe('<reflect type="check">u0</reflect><reflect type="check">u1</reflect>');
+		// The drain kept reading past the abort so the terminal event's usage survives.
+		expect(result.usage?.cacheRead).toBe(5000);
+	});
+
+	it("truncateToUnitCap drops whole units from the tail", () => {
+		const text = '<reflect type="check">a</reflect><reflect type="check">b</reflect><reflect type="check">c';
+		expect(truncateToUnitCap(text, 1)).toBe('<reflect type="check">a</reflect>');
+		expect(truncateToUnitCap(text, 5)).toBe('<reflect type="check">a</reflect><reflect type="check">b</reflect>');
+		expect(truncateToUnitCap("", 2)).toBe("");
 	});
 });
