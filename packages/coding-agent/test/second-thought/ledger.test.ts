@@ -611,6 +611,26 @@ describe("SecondThoughtLedger retention", () => {
 		expect(ledger.report().tokens.output).toBe(10);
 	});
 
+	it("books a late evicted result without resurrecting its rollup", () => {
+		const ledger = new SecondThoughtLedger({ modelFor: () => ANTHROPIC }, { recordCap: 2 });
+		for (const generation of [1, 2, 3]) {
+			ledger.recordFork(forkInfo({ generation }));
+			ledger.recordBranchResult(
+				branchResult({ usage: usage({ output: generation * 10 }) }),
+				forkInfo({ generation }),
+			);
+		}
+
+		const before = ledger.report().rollups.map(rollup => rollup.generation);
+		ledger.recordBranchResult(branchResult({ usage: usage({ output: 7 }) }), forkInfo({ generation: 1 }));
+		const report = ledger.report();
+
+		expect(report.rollups.map(rollup => rollup.generation)).toEqual(before);
+		expect(report.rollups.map(rollup => rollup.generation)).toEqual([2, 3]);
+		expect(report.rollups.at(-1)?.generation).toBe(3);
+		expect(report.tokens.output).toBe(67);
+	});
+
 	it("clears every counter on reset", () => {
 		const { ledger } = ledgerWith({ hasOAuth: () => true });
 		ledger.recordFork(forkInfo());
@@ -637,6 +657,23 @@ describe("SecondThoughtLedger retention", () => {
 		expect(report.rateLimits).toEqual({});
 		expect(report.records).toHaveLength(0);
 		expect(report.rollups).toHaveLength(0);
+	});
+
+	it("ignores a late result from before reset", () => {
+		const { ledger, observed } = ledgerWith();
+		const info = forkInfo({ generation: 42 });
+		ledger.recordFork(info);
+		ledger.reset();
+		ledger.recordBranchResult(branchResult({ usage: usage({ input: 10, output: 20 }) }), info);
+		ledger.recordHarvest(harvest({ generation: 42, units: [["check", "late"]] }));
+
+		const report = ledger.report();
+		expect(report.branches).toBe(0);
+		expect(report.harvests).toBe(0);
+		expect(report.unitsHarvested).toBe(0);
+		expect(report.tokens).toEqual({ uncachedInput: 0, cacheRead: 0, cacheWrite: 0, output: 0, totalTokens: 0 });
+		expect(report.records).toHaveLength(0);
+		expect(observed).toHaveLength(0);
 	});
 
 	it("hands out copies, so a caller cannot mutate the ledger through its report", () => {

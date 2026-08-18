@@ -34,17 +34,26 @@
  * `recordObservedUsage` (wired by 08 to `authStorage.recordObservedUsage`)
  * directly, once per branch result that observed usage. That is the same hook
  * `agent-session.ts` uses for the primary turn, and it is deliberately NOT the
- * provider-header ingest path: `SessionStats.ingestProviderUsageHeaders` calls
- * `authStorage.ingestUsageHeaders(..., { sessionId: agent.sessionId })` with the
- * PRIMARY session id hard-coded, so a branch response reaching it is attributed
- * to the primary account window regardless of the side session id the branch
- * streamed under.
+ * provider-header ingest path. There are two separate hazards here:
  *
- * The branch caller strips `onResponse` both before and after host option
- * preparation. The second strip matters because
+ * - An unstripped branch `onResponse` would call
+ *   `SessionStats.ingestProviderUsageHeaders`, whose
+ *   `authStorage.ingestUsageHeaders(..., { sessionId: agent.sessionId })` uses
+ *   the PRIMARY session id. That pollutes the primary OAuth quota window even
+ *   though the branch streamed under a side session id. `branch-call` now
+ *   strips `onResponse` before and after host option preparation.
+ * - Broker usage is double-booked only if a caller also invokes
+ *   `recordObservedUsage` for this same branch. The branch wiring must leave
+ *   that call to this ledger alone.
+ *
+ * The second `onResponse` strip matters because
  * `SessionProviderBoundary.prepareSimpleStreamOptions` injects the primary
  * session's header-ingest hook when it sees none. Branch usage therefore only
  * reaches the broker through this ledger, under the record's side session id.
+ * This ledger forwards orchestration-folded `uncachedInput`, whereas the
+ * primary session path forwards raw `usage.input`; that is acceptable because
+ * the broker has one input bucket and folding keeps billed orchestration input
+ * from being silently omitted.
  *
  * ## The undercount is bounded, not observed
  *
@@ -283,6 +292,8 @@ interface MutableCost {
 interface MutableRollup {
 	generation: number;
 	epoch: number;
+	/** Ledger-local reset epoch captured when this fork was recorded. */
+	ledgerEpoch: number;
 	forkedAt: number;
 	model: string;
 	provider: string;
@@ -416,6 +427,10 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 	#records: SecondThoughtBranchRecord[] = [];
 	#rollups = new Map<number, MutableRollup>();
 	#rollupOrder: number[] = [];
+	/** Increments on reset so late results cannot cross conversation boundaries. */
+	#ledgerEpoch = 0;
+	/** Fork generation → ledger epoch. Retained across reset to fence late finalizers. */
+	#forkLedgerEpochs = new Map<number, number>();
 
 	constructor(host: SecondThoughtLedgerHost = {}, options: SecondThoughtLedgerOptions = {}) {
 		this.#host = host;
@@ -439,6 +454,7 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 	/** Count a fork and open its rollup. */
 	recordFork(info: SecondThoughtForkInfo): void {
 		this.#forks++;
+		this.#forkLedgerEpochs.set(info.generation, this.#ledgerEpoch);
 		this.#rollupFor(info);
 	}
 
@@ -450,16 +466,17 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 	/**
 	 * Attribute one settled branch call.
 	 *
-	 * Called for EVERY branch the coordinator observes — completed, cancelled,
-	 * superseded, rewound, and drained-by-the-background-finalizer alike. That is
-	 * the coordinator's documented policy and the ledger's reason to exist: the
-	 * provider billed the call, so the call is on the books. Only the adaptive
-	 * state is epoch-gated, and that lives in the coordinator, not here.
+	 * Called for every branch the coordinator observes in the current ledger
+	 * epoch — completed, cancelled, superseded, rewound, and
+	 * drained-by-the-background-finalizer alike. A result for a fork from before a
+	 * ledger reset is deliberately ignored: its spend belongs to the closed old
+	 * conversation, never the new one.
 	 */
 	recordBranchResult(result: BranchCallResult, info: SecondThoughtForkInfo): void {
 		try {
+			if (!this.#belongsToCurrentEpoch(info.generation)) return;
 			const rollup = this.#rollupFor(info);
-			const record = this.#buildRecord(result, info, rollup.branchMaxTokens);
+			const record = this.#buildRecord(result, info, rollup?.branchMaxTokens ?? this.#branchMaxTokens());
 			this.#branches++;
 			this.#terminations[record.termination]++;
 			addSplit(this.#tokens, record.tokens);
@@ -467,11 +484,13 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 			this.#undercountBoundTokens += record.undercountBoundTokens;
 			if (!record.usageObserved) this.#branchesWithoutUsage++;
 
-			rollup.recordedBranches++;
-			rollup.terminations[record.termination]++;
-			addSplit(rollup.tokens, record.tokens);
-			addCost(rollup.costUsd, record.costUsd);
-			rollup.undercountBoundTokens += record.undercountBoundTokens;
+			if (rollup) {
+				rollup.recordedBranches++;
+				rollup.terminations[record.termination]++;
+				addSplit(rollup.tokens, record.tokens);
+				addCost(rollup.costUsd, record.costUsd);
+				rollup.undercountBoundTokens += record.undercountBoundTokens;
+			}
 
 			this.#push(record);
 			this.#noteOAuth(record.provider);
@@ -490,6 +509,7 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 	/** Record what a fork's harvest actually kept. */
 	recordHarvest(harvest: SecondThoughtHarvest): void {
 		try {
+			if (!this.#belongsToCurrentEpoch(harvest.generation)) return;
 			this.#harvests++;
 			this.#unitsHarvested += harvest.units.length;
 			const rollup = this.#rollups.get(harvest.generation);
@@ -617,9 +637,12 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 	 * Wired by 08 to the same conversation-scoped transitions that call
 	 * `SecondThoughtCoordinator.reset` (session switch, new session), for the same
 	 * reason the coordinator clears its EMAs there: the figures describe one
-	 * conversation and carrying them across a switch misattributes spend.
+	 * conversation and carrying them across a switch misattributes spend. The
+	 * previous epoch's totals, including its undercount bound, close here; late
+	 * old-epoch results and harvests cannot be attributed to the new conversation.
 	 */
 	reset(): void {
+		this.#ledgerEpoch++;
 		this.#forks = 0;
 		this.#branches = 0;
 		this.#harvests = 0;
@@ -793,12 +816,23 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 		}
 	}
 
-	#rollupFor(info: SecondThoughtForkInfo): MutableRollup {
+	#belongsToCurrentEpoch(generation: number): boolean {
+		const rollup = this.#rollups.get(generation);
+		if (rollup && rollup.ledgerEpoch !== this.#ledgerEpoch) return false;
+		const forkLedgerEpoch = this.#forkLedgerEpochs.get(generation);
+		return forkLedgerEpoch === undefined || forkLedgerEpoch === this.#ledgerEpoch;
+	}
+
+	#rollupFor(info: SecondThoughtForkInfo): MutableRollup | undefined {
 		const existing = this.#rollups.get(info.generation);
-		if (existing) return existing;
+		if (existing) return existing.ledgerEpoch === this.#ledgerEpoch ? existing : undefined;
+		// A drained result for an aged-out generation still belongs in the session
+		// totals, but recreating its rollup would evict a newer, complete one.
+		if (this.#isOlderThanRetainedWindow(info.generation)) return undefined;
 		const rollup: MutableRollup = {
 			generation: info.generation,
 			epoch: info.epoch,
+			ledgerEpoch: this.#ledgerEpoch,
 			forkedAt: info.forkedAt,
 			model: info.model,
 			provider: info.provider,
@@ -810,10 +844,16 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 			undercountBoundTokens: 0,
 			terminations: emptyTerminations(),
 		};
+		this.#forkLedgerEpochs.set(info.generation, this.#ledgerEpoch);
 		this.#rollups.set(info.generation, rollup);
 		this.#rollupOrder.push(info.generation);
 		this.#trimRollups();
 		return rollup;
+	}
+
+	#isOlderThanRetainedWindow(generation: number): boolean {
+		const oldestRetained = this.#rollupOrder[0];
+		return oldestRetained !== undefined && generation < oldestRetained;
 	}
 
 	#push(record: SecondThoughtBranchRecord): void {
