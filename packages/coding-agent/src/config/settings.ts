@@ -44,6 +44,7 @@ import { INSPECT_IMAGE_MODES } from "../utils/inspect-image-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import {
 	type BashInterceptorRule,
+	clampNumberSettingValue,
 	type GroupPrefix,
 	type GroupTypeMap,
 	getDefault,
@@ -482,8 +483,9 @@ export class Settings {
 		const value = getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]);
 		const resolved =
 			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
-		this.#resolvedCache.set(path, resolved);
-		return resolved as SettingValue<P>;
+		const normalized = clampNumberSettingValue(path, resolved as SettingValue<P>);
+		this.#resolvedCache.set(path, normalized);
+		return normalized;
 	}
 
 	/**

@@ -268,6 +268,8 @@ interface StringDef extends CredentialMarker {
 interface NumberDef extends CredentialMarker {
 	type: "number";
 	default: number | undefined;
+	min?: number;
+	max?: number;
 	ui?: UiNumber;
 }
 
@@ -3186,6 +3188,8 @@ export const SETTINGS_SCHEMA = {
 	"secondThought.branchCount": {
 		type: "number",
 		default: 1,
+		min: 1,
+		max: 4,
 		ui: {
 			tab: "context",
 			group: "Second Thought",
@@ -5722,6 +5726,14 @@ export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boo
 /** Get the default value for a setting path */
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
 	return SETTINGS_SCHEMA[path].default as SettingValue<P>;
+}
+
+/** Clamp a bounded numeric setting before it reaches callers. */
+export function clampNumberSettingValue<P extends SettingPath>(path: P, value: SettingValue<P>): SettingValue<P> {
+	const def = SETTINGS_SCHEMA[path] as SettingDef;
+	if (def.type !== "number" || (def.min === undefined && def.max === undefined)) return value;
+	if (typeof value !== "number" || !Number.isFinite(value)) return def.default as SettingValue<P>;
+	return Math.min(def.max ?? Infinity, Math.max(def.min ?? -Infinity, value)) as SettingValue<P>;
 }
 
 /** Check if a path has UI metadata (should appear in settings panel) */

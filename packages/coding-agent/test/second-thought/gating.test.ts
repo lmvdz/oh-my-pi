@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test, vi } from "bun:test";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { logger } from "@oh-my-pi/pi-utils";
 import { evaluateSecondThoughtGate } from "../../src/session/second-thought/gating";
 
 function model<TApi extends Api>(api: TApi, provider: string, id: string): Model<TApi> {
@@ -21,6 +22,10 @@ function model<TApi extends Api>(api: TApi, provider: string, id: string): Model
 
 const anthropic = model("anthropic-messages", "anthropic", "claude-test");
 const openai = model("openai-completions", "openai", "gpt-test");
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 function enabledSettings(): Settings {
 	return Settings.isolated({ "secondThought.enabled": true });
@@ -58,6 +63,28 @@ describe("Second Thought gate", () => {
 		});
 
 		expect(result).toEqual({ allowed: false, branchModel: undefined, reason: "no-primary-model" });
+	});
+
+	test("logs one debug notice for repeated non-Anthropic primary-model failures", () => {
+		const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
+		const options = {
+			settings: enabledSettings(),
+			agentKind: "main" as const,
+			primaryModel: openai,
+			availableModels: [openai],
+		};
+
+		expect(evaluateSecondThoughtGate(options)).toMatchObject({
+			allowed: false,
+			branchModel: openai,
+			reason: "primary-model-not-anthropic",
+		});
+		expect(evaluateSecondThoughtGate(options)).toMatchObject({
+			allowed: false,
+			branchModel: openai,
+			reason: "primary-model-not-anthropic",
+		});
+		expect(debugSpy).toHaveBeenCalledTimes(1);
 	});
 
 	test("rejects a non-Anthropic primary model", () => {
@@ -124,24 +151,6 @@ describe("Second Thought gate", () => {
 
 		expect(result).toEqual({ allowed: true, branchModel: override });
 	});
-
-	test("returns stable failures when the once-per-reason notice is reached repeatedly", () => {
-		const options = {
-			settings: enabledSettings(),
-			agentKind: "main" as const,
-			primaryModel: openai,
-			availableModels: [openai],
-		};
-
-		expect(evaluateSecondThoughtGate(options)).toMatchObject({
-			allowed: false,
-			reason: "primary-model-not-anthropic",
-		});
-		expect(evaluateSecondThoughtGate(options)).toMatchObject({
-			allowed: false,
-			reason: "primary-model-not-anthropic",
-		});
-	});
 });
 
 describe("Second Thought settings", () => {
@@ -152,6 +161,16 @@ describe("Second Thought settings", () => {
 		expect(settings.get("secondThought.branchCount")).toBe(1);
 		expect(settings.get("secondThought.branchMaxTokens")).toBe(2048);
 		expect(settings.get("secondThought.harvestCapPerAtom")).toBe(20);
+		expect(settings.get("secondThought.atoms")).toEqual(["check", "rehearse", "recall", "alternative"]);
+		expect(settings.get("secondThought.maxContextTokens")).toBe(100_000);
+		expect(settings.get("secondThought.minConditioningChars")).toBe(64);
 		expect(settings.get("secondThought.deliveryCalls")).toBe(1);
+		expect(settings.get("secondThought.showInTranscript")).toBe(false);
+	});
+
+	test("clamps branchCount to its supported range", () => {
+		const branchCount = Settings.isolated({ "secondThought.branchCount": 5 }).get("secondThought.branchCount");
+
+		expect(branchCount).toBe(4);
 	});
 });
