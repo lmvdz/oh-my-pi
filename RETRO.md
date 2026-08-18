@@ -16,7 +16,7 @@ file:line claims against its checkout and reports contradictions** (ticket-decay
 
 ## Entries
 
-(none yet)
+
 ### ST-05 settings/role/gating (#7) — closed 2026-08-17
 - 1 build round (codex terra) + 2 fix rounds + 2 gauntlet rounds (codex terra, blind).
 - r1 caught: branchCount max=4 was UI-only — reproduced live (isolated 5 → read 5); fixed
