@@ -21,6 +21,7 @@ import {
 	buildBranchContext,
 	buildBranchStreamOptions,
 	snapshotBranchContext,
+	snapshotTailIsDeveloper,
 } from "../../src/session/second-thought/branch-call";
 
 /**
@@ -123,6 +124,18 @@ function mainContext(): Context {
 	};
 }
 
+/** A supported-model shape where a trailing developer turn becomes `system`. */
+function developerTailContext(): Context {
+	return {
+		systemPrompt: [],
+		messages: [
+			{ role: "user", content: "Summarize the plan.", timestamp: 1 },
+			{ role: "developer", content: "Keep the answer to one paragraph.", timestamp: 2 },
+		],
+		tools: [],
+	};
+}
+
 function encode(messages: Message[]): string {
 	return JSON.stringify(convertAnthropicMessages(structuredClone(messages), MODEL, false));
 }
@@ -184,6 +197,44 @@ function branchRequest(extra: Partial<SimpleStreamOptions> = {}): BranchCallRequ
 }
 
 describe("golden Anthropic prefix parity", () => {
+	it("documents the developer-tail role divergence caused by the appended conditioning user", () => {
+		const main = developerTailContext();
+		const snap = snapshotBranchContext(main, MODEL, 100);
+		const branch = buildBranchContext(snap, { conditioningText: "Check the plan's assumptions.", now: 200 });
+
+		// EXPECTED DIVERGENCE (ticket 03 owns the branch skip policy): Anthropic
+		// may upgrade the main call's terminal developer turn to system, but the
+		// appended branch user makes that developer turn ineligible for upgrade.
+		expect(encodedParams(main.messages).map(message => (message as { role: string }).role)).toEqual([
+			"user",
+			"system",
+		]);
+		expect(encodedParams(branch.messages).map(message => (message as { role: string }).role)).toEqual([
+			"user",
+			"user",
+			"user",
+		]);
+	});
+
+	it("detects developer, user, and assistant snapshot tails", () => {
+		const user = { role: "user", content: "user", timestamp: 1 } satisfies Message;
+		const developer = { role: "developer", content: "developer", timestamp: 2 } satisfies Message;
+		const assistant = {
+			role: "assistant",
+			content: [{ type: "text", text: "assistant" }],
+			api: MODEL.api,
+			provider: MODEL.provider,
+			model: MODEL.id,
+			usage: usage(),
+			stopReason: "stop",
+			timestamp: 3,
+		} satisfies AssistantMessage;
+
+		expect(snapshotTailIsDeveloper([user, developer])).toBe(true);
+		expect(snapshotTailIsDeveloper([user])).toBe(false);
+		expect(snapshotTailIsDeveloper([user, assistant])).toBe(false);
+	});
+
 	it("the fixture actually exercises the abandoned-tool-use signed-thinking path", () => {
 		const params = encodedParams(mainContext().messages) as {
 			role: string;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage, Context, Message, Model, SimpleStreamOptions, Usage } from "@oh-my-pi/pi-ai";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
@@ -31,13 +31,13 @@ const MODEL = {
 	maxTokens: 64_000,
 } as unknown as Model;
 
-function usage(): Usage {
+function usage(cacheRead = 5000): Usage {
 	return {
 		input: 12,
 		output: 34,
-		cacheRead: 5000,
+		cacheRead,
 		cacheWrite: 0,
-		totalTokens: 5046,
+		totalTokens: 46 + cacheRead,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
 }
@@ -94,6 +94,7 @@ function scriptedStreamFn(
 		holdAfter?: number;
 		emitToolCall?: boolean;
 		finish?: "done" | "abortError" | "error" | "throw";
+		terminalUsage?: Usage;
 		onDelta?: (index: number) => void;
 	} = {},
 ) {
@@ -103,6 +104,7 @@ function scriptedStreamFn(
 		if (opts.finish === "throw") throw new Error("provider exploded");
 		const stream = new AssistantMessageEventStream();
 		const signal = options.signal;
+		const terminalUsage = opts.terminalUsage ?? usage();
 		let text = "";
 		void (async () => {
 			for (const [index, delta] of deltas.entries()) {
@@ -137,7 +139,7 @@ function scriptedStreamFn(
 				stream.push({
 					type: "error",
 					reason: "aborted",
-					error: doneMessage(text, { stopReason: "aborted", errorMessage: "aborted" }),
+					error: doneMessage(text, { stopReason: "aborted", errorMessage: "aborted", usage: terminalUsage }),
 				});
 				stream.end();
 				return;
@@ -146,12 +148,16 @@ function scriptedStreamFn(
 				stream.push({
 					type: "error",
 					reason: "error",
-					error: doneMessage(text, { stopReason: "error", errorMessage: "overloaded_error" }),
+					error: doneMessage(text, {
+						stopReason: "error",
+						errorMessage: "overloaded_error",
+						usage: terminalUsage,
+					}),
 				});
 				stream.end();
 				return;
 			}
-			const message = doneMessage(text);
+			const message = doneMessage(text, { usage: terminalUsage });
 			stream.push({ type: "done", reason: "stop", message });
 			stream.end(message);
 		})();
@@ -568,6 +574,49 @@ describe("BranchCaller stagger", () => {
 		await Promise.all(handles.map(handle => handle.result));
 	});
 
+	for (const timeoutMs of [0, Number.NaN, Number.POSITIVE_INFINITY]) {
+		it(`uses the default bound when the stagger timeout is ${String(timeoutMs)}`, async () => {
+			vi.useFakeTimers();
+			try {
+				const calls: ScriptedCall[] = [];
+				const streamFn = async (model: Model, context: Context, options: SimpleStreamOptions = {}) => {
+					calls.push({ model, context, options });
+					const stream = new AssistantMessageEventStream();
+					void (async () => {
+						stream.push({ type: "start", partial: doneMessage("") });
+						const abortGate = Promise.withResolvers<void>();
+						const onAbort = () => abortGate.resolve();
+						if (options.signal?.aborted) abortGate.resolve();
+						else options.signal?.addEventListener("abort", onAbort, { once: true });
+						await abortGate.promise;
+						const message = doneMessage("");
+						stream.push({ type: "done", reason: "stop", message });
+						stream.end(message);
+					})();
+					return stream;
+				};
+
+				const caller = new BranchCaller({ streamFn });
+				const pending = caller.startMany(
+					3,
+					request({ streamOptions: hostOptions({ streamFirstEventTimeoutMs: timeoutMs }) }),
+				);
+				await Promise.resolve();
+				expect(calls).toHaveLength(1);
+
+				vi.advanceTimersByTime(DEFAULT_STAGGER_TIMEOUT_MS);
+				const handles = await pending;
+				expect(handles).toHaveLength(3);
+				expect(calls).toHaveLength(3);
+
+				for (const handle of handles) handle.abort();
+				await Promise.all(handles.map(handle => handle.result));
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	}
+
 	it("does not fan out when the caller aborted while the gate was open", async () => {
 		const calls: ScriptedCall[] = [];
 		const controller = new AbortController();
@@ -740,7 +789,9 @@ describe("BranchCaller usage and outcome accounting", () => {
 
 	it("truncates a multi-unit delta back to the cap and still records terminal usage", async () => {
 		const overshoot = Array.from({ length: 5 }, (_, i) => `<reflect type="check">u${i}</reflect>`).join("");
-		const caller = new BranchCaller({ streamFn: scriptedStreamFn([overshoot, "trailing garbage"]) });
+		const caller = new BranchCaller({
+			streamFn: scriptedStreamFn([overshoot, "trailing garbage"], { terminalUsage: usage(9000) }),
+		});
 
 		const result = await caller.run(request({ harvestCapPerAtom: 1, atoms: ["check", "recall"] }));
 
@@ -751,8 +802,9 @@ describe("BranchCaller usage and outcome accounting", () => {
 			["check", "u1"],
 		]);
 		expect(result.text).toBe('<reflect type="check">u0</reflect><reflect type="check">u1</reflect>');
-		// The drain kept reading past the abort so the terminal event's usage survives.
-		expect(result.usage?.cacheRead).toBe(5000);
+		// The drain kept reading past the abort, so terminal usage overrides the
+		// distinct partial-usage fixture carried by the text delta.
+		expect(result.usage?.cacheRead).toBe(9000);
 	});
 
 	it("truncateToUnitCap drops whole units from the tail", () => {

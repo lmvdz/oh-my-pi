@@ -269,6 +269,18 @@ export function snapshotBranchContext(context: Context, model: Model, now = Date
 	};
 }
 
+/**
+ * Whether the captured provider-facing conversation ends in a developer turn.
+ *
+ * Anthropic may upgrade that trailing turn to a mid-conversation `system`
+ * message. Appending the branch's synthetic user conditioning changes the
+ * placement and suppresses that upgrade; ticket 03's coordinator policy uses
+ * this signal to decide whether the branch shape is safe to send.
+ */
+export function snapshotTailIsDeveloper(messages: readonly Message[]): boolean {
+	return messages.at(-1)?.role === "developer";
+}
+
 /** Canonicalize requested atoms: drop unknown names, restore declared order. */
 export function normalizeBranchAtoms(atoms: readonly string[] | undefined): ReflectAtom[] {
 	if (!atoms || atoms.length === 0) return [...ATOM_NAMES];
@@ -572,19 +584,19 @@ export class BranchCaller {
 	}
 
 	async #awaitStaggerGate(first: BranchCallHandle, request: BranchCallRequest): Promise<void> {
-		const timeoutMs = request.streamOptions?.streamFirstEventTimeoutMs ?? DEFAULT_STAGGER_TIMEOUT_MS;
+		const configuredTimeoutMs = request.streamOptions?.streamFirstEventTimeoutMs;
+		const timeoutMs =
+			typeof configuredTimeoutMs === "number" && Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+				? configuredTimeoutMs
+				: DEFAULT_STAGGER_TIMEOUT_MS;
 		const gates: Promise<unknown>[] = [first.firstToken];
 
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-			gates.push(
-				new Promise<void>(resolve => {
-					timer = setTimeout(resolve, timeoutMs);
-					// Never hold the process open for a stagger gate.
-					(timer as { unref?: () => void }).unref?.();
-				}),
-			);
-		}
+		let timer: Timer | undefined;
+		const timerGate = Promise.withResolvers<void>();
+		timer = setTimeout(timerGate.resolve, timeoutMs);
+		// Never hold the process open for a stagger gate.
+		timer.unref?.();
+		gates.push(timerGate.promise);
 
 		const signal = request.signal;
 		let onAbort: (() => void) | undefined;
