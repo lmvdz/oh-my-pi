@@ -1,0 +1,203 @@
+import { describe, expect, it } from "bun:test";
+import {
+	countReflectUnits,
+	interleaveTypedUnitsByAtom,
+	normalizeReflectClosers,
+	parseReflectTypedUnits,
+	reflectUnits,
+	truncateAtLastCompleteReflect,
+} from "../../src/session/second-thought/parser";
+
+describe("reflect-unit helpers", () => {
+	it("counts complete typed and untyped units", () => {
+		const text =
+			"<reflect>predict: a.</reflect> " +
+			'<reflect type="check">expect: b.</reflect> ' +
+			"<reflect>contingency: c.</reflect>";
+
+		expect(countReflectUnits(text)).toBe(3);
+	});
+
+	it("does not count an unclosed unit", () => {
+		const text = "<reflect>predict: a.</reflect> <reflect>expect: incomplete...";
+
+		expect(countReflectUnits(text)).toBe(1);
+	});
+
+	it("counts no units in empty input", () => {
+		expect(countReflectUnits("")).toBe(0);
+	});
+
+	it("returns trimmed inner strings", () => {
+		const text = "<reflect> predict: a. </reflect>\n<reflect>expect: b.</reflect>";
+
+		expect(reflectUnits(text)).toEqual(["predict: a.", "expect: b."]);
+	});
+
+	it("parses only complete typed units", () => {
+		const text = '<reflect>legacy</reflect><reflect type="check"> first </reflect><reflect type="recall">partial';
+
+		expect(parseReflectTypedUnits(text)).toEqual([["check", "first"]]);
+	});
+
+	it("keeps complete units and drops an in-flight tail", () => {
+		const text =
+			"Hmm <reflect>predict: a.</reflect>\n" + "<reflect>expect: b.</reflect>\n" + "<reflect>contingency: ";
+		const output = truncateAtLastCompleteReflect(text);
+
+		expect(output.endsWith("</reflect>")).toBe(true);
+		expect(output).not.toContain("<reflect>contingency:");
+		expect(countReflectUnits(output)).toBe(2);
+	});
+
+	it("returns empty when no complete unit exists", () => {
+		expect(truncateAtLastCompleteReflect("<reflect>predict: half-done")).toBe("");
+	});
+
+	it("returns empty when there are no units", () => {
+		expect(truncateAtLastCompleteReflect("no reflect tags here at all")).toBe("");
+	});
+
+	it("round-robin interleaves atom streams and skips missing positions", () => {
+		const output = interleaveTypedUnitsByAtom(
+			{ check: ["c0", "c1"], rehearse: ["r0"], recall: [], alternative: ["a0", "a1"] },
+			["check", "rehearse", "recall", "alternative"],
+		);
+
+		expect(output).toBe(
+			'<reflect type="check">c0</reflect>\n' +
+				'<reflect type="rehearse">r0</reflect>\n' +
+				'<reflect type="alternative">a0</reflect>\n' +
+				'<reflect type="check">c1</reflect>\n' +
+				'<reflect type="alternative">a1</reflect>',
+		);
+	});
+
+	it("returns an empty fold for empty streams", () => {
+		expect(interleaveTypedUnitsByAtom({}, ["check", "recall"])).toBe("");
+	});
+});
+
+describe("malformed reflect closer repair", () => {
+	it("leaves well-formed text untouched", () => {
+		const text = '<reflect type="check">a</reflect><reflect type="recall">b</reflect>';
+
+		expect(normalizeReflectClosers(text)).toBe(text);
+		expect(countReflectUnits(text)).toBe(2);
+	});
+
+	it("prevents a malformed closer from swallowing the next unit", () => {
+		const text = '<reflect type="check">a</refresh><reflect type="recall">b</reflect>';
+
+		expect(countReflectUnits(text)).toBe(2);
+		expect(parseReflectTypedUnits(text)).toEqual([
+			["check", "a"],
+			["recall", "b"],
+		]);
+	});
+
+	it("repairs the DeepSeek DSML special-token closer", () => {
+		const text = '<reflect type="alternative">x</｜｜DSML｜｜>\n<reflect type="check">y</reflect>';
+
+		expect(parseReflectTypedUnits(text).map(([type]) => type)).toEqual(["alternative", "check"]);
+	});
+
+	it("lets a genuine closer win over quoted markup", () => {
+		const text = '<reflect type="check">the template emits </span> here</reflect>';
+
+		expect(parseReflectTypedUnits(text)).toEqual([["check", "the template emits </span> here"]]);
+	});
+
+	it("leaves an unclosed tail incomplete", () => {
+		const text = '<reflect type="check">done</reflect><reflect type="recall">in flig';
+
+		expect(countReflectUnits(text)).toBe(1);
+		expect(truncateAtLastCompleteReflect(text)).toBe('<reflect type="check">done</reflect>');
+	});
+
+	it("keeps a repaired unit and balances its markup", () => {
+		const text = '<reflect type="check">a</refresh> trailing junk';
+
+		expect(truncateAtLastCompleteReflect(text)).toBe('<reflect type="check">a</reflect>');
+	});
+
+	it("is idempotent", () => {
+		const text = '<reflect type="check">a</reflection><reflect type="recall">b</ref>';
+		const once = normalizeReflectClosers(text);
+
+		expect(normalizeReflectClosers(once)).toBe(once);
+		expect(countReflectUnits(once)).toBe(2);
+	});
+
+	it("does not close a unit with no closer before the next opener", () => {
+		const text = '<reflect type="check">a<reflect type="recall">b</reflect>';
+
+		expect(countReflectUnits(text)).toBe(1);
+	});
+
+	it.each(["</refresh>", "</reflection>", "</ref lect>", "</｜｜DSML｜｜>"])(
+		"repairs the measured malformed closer %s",
+		closer => {
+			const text = `<reflect type="check">body${closer}`;
+
+			expect(normalizeReflectClosers(text)).toBe('<reflect type="check">body</reflect>');
+		},
+	);
+});
+
+describe("provider leakage and defensive limits", () => {
+	it("ignores Claude thinking fragments around reflect units", () => {
+		const text =
+			'<thinking>private prelude</thinking><reflect type="check">safe</reflect>' +
+			'<thinking>private middle</thinking><reflect type="recall">also safe</reflect><thinking>tail';
+
+		expect(parseReflectTypedUnits(text)).toEqual([
+			["check", "safe"],
+			["recall", "also safe"],
+		]);
+	});
+
+	it("rejects a unit containing a nested thinking control tag", () => {
+		const text =
+			'<reflect type="check"><thinking>hidden instruction</thinking>visible</reflect>' +
+			'<reflect type="recall">safe</reflect>';
+
+		expect(parseReflectTypedUnits(text)).toEqual([["recall", "safe"]]);
+	});
+
+	it("rejects a unit containing a nested tool control tag", () => {
+		const text = '<reflect type="check">observe <tool_call>danger</tool_call></reflect>';
+
+		expect(parseReflectTypedUnits(text)).toEqual([]);
+		expect(reflectUnits(text)).toEqual([]);
+	});
+
+	it("enforces unit limits in UTF-8 bytes", () => {
+		const text = '<reflect type="check">ééé</reflect>';
+
+		expect(parseReflectTypedUnits(text, { maxUnitBytes: 4 })).toEqual([]);
+		expect(parseReflectTypedUnits('<reflect type="check">éé</reflect>', { maxUnitBytes: 4 })).toEqual([
+			["check", "éé"],
+		]);
+	});
+
+	it("rejects unsafe and oversized bodies during fold assembly", () => {
+		const output = interleaveTypedUnitsByAtom(
+			{ check: ["safe", "<thinking>unsafe</thinking>"], recall: ["12345"] },
+			["check", "recall"],
+			{ maxUnitBytes: 4 },
+		);
+
+		expect(output).toBe('<reflect type="check">safe</reflect>');
+	});
+
+	it("never emits a partial unit when the serialized fold reaches its byte cap", () => {
+		const first = '<reflect type="check">one</reflect>';
+		const output = interleaveTypedUnitsByAtom({ check: ["one", "two"], recall: ["x"] }, ["check", "recall"], {
+			maxFoldBytes: Buffer.byteLength(first),
+		});
+
+		expect(output).toBe(first);
+		expect(Buffer.byteLength(output)).toBeLessThanOrEqual(Buffer.byteLength(first));
+	});
+});
