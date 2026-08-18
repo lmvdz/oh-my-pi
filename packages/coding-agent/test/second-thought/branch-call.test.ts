@@ -604,6 +604,14 @@ describe("BranchCaller stagger", () => {
 				await Promise.resolve();
 				expect(calls).toHaveLength(1);
 
+				// The gate must hold for the FULL default bound — not release on a
+				// setTimeout-clamped degenerate delay (0/NaN/Infinity coerce to ~1ms),
+				// which would fire the fan-out before call 1's first token.
+				vi.advanceTimersByTime(50);
+				await Promise.resolve();
+				await Promise.resolve();
+				expect(calls).toHaveLength(1);
+
 				vi.advanceTimersByTime(DEFAULT_STAGGER_TIMEOUT_MS);
 				const handles = await pending;
 				expect(handles).toHaveLength(3);
