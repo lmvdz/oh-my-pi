@@ -99,3 +99,17 @@ file:line claims against its checkout and reports contradictions** (ticket-decay
   + steering wraps run after transformContext) → #10.
 - Process lesson: "the wrapper says observations-not-instructions" protects nothing;
   only delimiter hygiene at every public boundary does.
+### ST-06 cost ledger (#8) — closed 2026-08-17
+- 1 build round (opus) + 2 fix rounds (codex terra) + 3 gauntlet rounds (grok ×3).
+- The build's contradiction hunt found the campaign's most consequential wiring defect:
+  header-ingest isolation was structurally broken (SessionProviderBoundary injects the
+  session onResponse; ingestProviderUsageHeaders hard-codes the primary sessionId) —
+  branch spend would have polluted the primary OAuth quota window. Fixed with an
+  onResponse strip at both option-build and post-host-prep in branch-call.
+- grok's accounting lane earned three rounds: r1 caught the undercount bound keying off
+  the collapsed termination label (completed tool-use leaks reporting 1.6k phantom
+  tokens), live-read ceilings, and ghost-rollup resurrection; r2 caught that the fix
+  round silently skipped findings 3/4/5 — the orchestrator had accepted the diff off
+  summary bullets instead of the receipt checklist. Standing rule from that slip: land a
+  fix round only after verifying the diff against the receipt's numbered list.
+- r3: all residuals implemented and test-pinned; PASS.
