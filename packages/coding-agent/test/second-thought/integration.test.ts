@@ -886,6 +886,53 @@ describe("Second Thought end to end", () => {
 		}
 	});
 
+	it("clears state when a root-entry branch throws after the session boundary is crossed", async () => {
+		// newSession() commits the transition; a throwing setSessionName must not
+		// leave Second Thought state alive (issue #10 gauntlet r3).
+		const { session, script } = await createHarness({
+			script: {
+				turns: [{ thinking: THINKING, toolCall: { name: "probe", args: {} } }, { text: "done" }, { text: "fresh" }],
+				branchText: REFLECT_TEXT,
+			},
+			settings: { "secondThought.deliveryCalls": 4 },
+		});
+		const runtime = session.secondThought!;
+		await session.prompt("fix the failing test");
+		await session.sessionManager.setSessionName("named", "user");
+
+		runtime.folds.accept({
+			generation: 998,
+			epoch: runtime.historyEpoch,
+			forkedAt: Date.now(),
+			harvestedAt: Date.now(),
+			windowMs: 100,
+			units: [{ atom: "check", text: "planted unit" }],
+			unitsByAtom: { check: ["planted unit"] },
+			fold: '<reflect type="check">planted unit</reflect>',
+			branchCount: 1,
+			settledCount: 1,
+			usage: [],
+		} as never);
+		expect(runtime.hasPendingFold).toBe(true);
+
+		const root = session.sessionManager.getBranch().find(entry => entry.type === "message");
+		expect(root).toBeDefined();
+		const original = session.sessionManager.setSessionName.bind(session.sessionManager);
+		session.sessionManager.setSessionName = async () => {
+			session.sessionManager.setSessionName = original;
+			throw new Error("rename boom");
+		};
+		await expect(session.branch((root as { id: string }).id)).rejects.toThrow("rename boom");
+
+		expect(runtime.hasPendingFold).toBe(false);
+
+		const callsBefore = script.mainCalls().length;
+		await session.prompt("different path");
+		for (const call of script.mainCalls().slice(callsBefore)) {
+			expect(foldMessages(call.context)).toHaveLength(0);
+		}
+	});
+
 	it("carries no fold across a handoff", async () => {
 		// A handoff replaces the entire transcript the reflections describe, so no
 		// fold may survive it. `session-handoff.ts` calls `resetSecondThought()`

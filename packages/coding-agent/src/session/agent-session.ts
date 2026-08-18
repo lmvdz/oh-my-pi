@@ -8291,13 +8291,18 @@ export class AgentSession {
 					const title = this.sessionManager.getSessionName();
 					const titleSource = this.sessionManager.titleSource;
 					await this.sessionManager.newSession({ parentSession: previousSessionFile });
+					// The conversation boundary is crossed the moment newSession()
+					// returns — mark it BEFORE the cosmetic rename, so a throwing
+					// setSessionName cannot leave the transition unrecorded (and the
+					// finally-side resets un-fired). Issue #10 gauntlet r3.
+					sessionTransitioned = true;
 					if (title) await this.sessionManager.setSessionName(title, titleSource);
 				} else {
 					this.sessionManager.createBranchedSession(selectedEntry.parentId);
+					sessionTransitioned = true;
 				}
 				this.#bash.markSessionTransition(bashTransition);
 				this.#advisors.clearCost();
-				sessionTransitioned = true;
 			} finally {
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
 			}
