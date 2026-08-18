@@ -67,7 +67,7 @@ import type { Usage, UserMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../../config/settings";
 import type { SecondThoughtHarvest } from "./coordinator";
-import { MAX_REFLECT_FOLD_BYTES, type ReflectTypedUnit } from "./parser";
+import { MAX_REFLECT_FOLD_BYTES, parseReflectTypedUnits, type ReflectTypedUnit, reflectUnits } from "./parser";
 import foldWrapperPrompt from "./prompts/fold-wrapper.md" with { type: "text" };
 
 /** Framing text marking the block as inert observations. Verbatim `.md` asset. */
@@ -93,8 +93,13 @@ export const SECOND_THOUGHT_FOLD_ENTRY_VERSION = 1;
 /** Default number of following requests that receive a fold. */
 export const DEFAULT_DELIVERY_CALLS = 1;
 
-/** Complete typed units, used only to re-cap markup that arrives over budget. */
-const REFLECT_UNIT_RE = /<reflect\s+type="[^"]*">.*?<\/reflect>/gs;
+/** Maximum unsafe-tail refusals before a fold is retired as undeliverable. */
+export const MAX_FOLD_DEFERRALS = 5;
+
+/** Complete units, used to validate and re-cap markup at the injection boundary. */
+const REFLECT_UNIT_RE = /<reflect(?:\s+[^>]*)?>.*?<\/reflect>/gs;
+const TYPED_REFLECT_OPEN_RE = /^<reflect\s+type="[^"]*">/;
+const FOLD_NESTED_CONTROL_TAG_RE = /<\/?(?:system-reminder|second-thought-observations)(?=[\s/>"'=])[^<>]*>/i;
 
 /** Why a pending fold stopped being pending. */
 export type FoldRetireReason =
@@ -110,6 +115,8 @@ export type FoldRetireReason =
 	| "superseded"
 	/** `secondThought.deliveryCalls` is zero: nothing may ever be delivered. */
 	| "no-delivery-budget"
+	/** Too many requests ended in a tail that cannot accept the fold. */
+	| "deferral-limit"
 	/** The rendered block held no units. */
 	| "empty";
 
@@ -226,18 +233,27 @@ function utf8Bytes(text: string): number {
 export function capReflectMarkup(markup: string, maxBytes: number = MAX_REFLECT_FOLD_BYTES): string {
 	if (!markup) return "";
 	if (maxBytes <= 0) return "";
-	if (utf8Bytes(markup) <= maxBytes) return markup;
 
 	const kept: string[] = [];
 	let bytes = 0;
 	for (const match of markup.matchAll(REFLECT_UNIT_RE)) {
 		const unit = match[0];
+		if (!reflectMarkupUnitIsSafe(unit)) continue;
 		const added = utf8Bytes(unit) + (kept.length === 0 ? 0 : 1);
 		if (bytes + added > maxBytes) break;
 		kept.push(unit);
 		bytes += added;
 	}
 	return kept.join("\n");
+}
+
+function reflectMarkupUnitIsSafe(unit: string): boolean {
+	// Keep this injection-boundary guard independent from the parser's list. A
+	// future parser regression must not let a body terminate our wrapper or forge
+	// the system-reminder convention used elsewhere in the coding agent.
+	if (FOLD_NESTED_CONTROL_TAG_RE.test(unit)) return false;
+	if (TYPED_REFLECT_OPEN_RE.test(unit)) return parseReflectTypedUnits(unit).length === 1;
+	return reflectUnits(unit).length === 1;
 }
 
 /** Render the injectable text: framing prose plus one delimited units section. */
@@ -270,7 +286,7 @@ export function isFoldMessage(message: FoldMessageLike | undefined): boolean {
 	return content.some(block => block.type === "text" && block.text.includes(FOLD_BLOCK_OPEN));
 }
 
-/** Whether a request array already carries a fold block. */
+/** Whether a request array carries a fold block anywhere in its history. */
 export function hasFoldMessage(messages: readonly FoldMessageLike[]): boolean {
 	return messages.some(isFoldMessage);
 }
@@ -307,8 +323,9 @@ export interface FoldInjectionResult<T> {
  * Pure injection: append the fold block to the end of a request array.
  *
  * Never mutates `messages`; returns the SAME array reference when nothing was
- * added and a fresh array when something was. Idempotent — an array that already
- * carries a fold block is returned untouched.
+ * added and a fresh array when something was. Idempotent — an array whose final
+ * message is the previously appended fold block is returned untouched. Earlier
+ * marker text is history, not proof that this append has already happened.
  */
 export function injectFoldBlock<T extends FoldMessageLike>(
 	messages: readonly T[],
@@ -316,7 +333,7 @@ export function injectFoldBlock<T extends FoldMessageLike>(
 	timestamp: number = Date.now(),
 ): FoldInjectionResult<T> {
 	if (!block) return { messages, injected: false, skip: "no-block" };
-	if (hasFoldMessage(messages)) return { messages, injected: false, skip: "already-present" };
+	if (isFoldMessage(messages.at(-1))) return { messages, injected: false, skip: "already-present" };
 	if (!foldTailIsInjectable(messages)) return { messages, injected: false, skip: "unsafe-tail" };
 	return { messages: [...messages, buildFoldMessage(block, timestamp)], injected: true };
 }
@@ -346,9 +363,17 @@ export class SecondThoughtFoldStore {
 	 * Survives retirement on purpose: with `deliveryCalls: 1` the fold is retired
 	 * by the very delivery that used it, so without this a re-assembly of THAT
 	 * request would silently drop the block and produce a different request than
-	 * the one already built. Cleared by run end and reset.
+	 * the one already built. Epoch and message identity bind the replay to that
+	 * request rather than the key alone. Cleared by run end and reset.
 	 */
-	#replay: { readonly key: unknown; readonly block: string } | undefined;
+	#replay:
+		| {
+				readonly key: unknown;
+				readonly block: string;
+				readonly epoch: number;
+				readonly messages: readonly FoldMessageLike[];
+		  }
+		| undefined;
 
 	constructor(host: SecondThoughtFoldHost) {
 		this.#host = host;
@@ -460,7 +485,14 @@ export class SecondThoughtFoldStore {
 			// Re-assembly of a request that already received a block: byte-identical
 			// output, no delivery spent, whether or not the fold is still pending.
 			if (requestKey !== undefined && this.#replay?.key === requestKey) {
-				return injectFoldBlock(messages, this.#replay.block, this.#now()).messages;
+				const replay = this.#replay;
+				const currentEpoch = this.#historyEpoch();
+				if (replay.epoch !== currentEpoch || !sameRequestMessages(messages, replay.messages)) {
+					this.#replay = undefined;
+					if (this.#pending && this.#pending.epoch !== currentEpoch) this.#retire("history-epoch");
+					return messages;
+				}
+				return injectFoldBlock(messages, replay.block, this.#now()).messages;
 			}
 
 			const fold = this.#pending;
@@ -482,13 +514,19 @@ export class SecondThoughtFoldStore {
 
 			const result = injectFoldBlock(messages, fold.block, this.#now());
 			if (!result.injected) {
-				if (result.skip === "unsafe-tail") fold.deferralCount++;
+				if (result.skip === "unsafe-tail") {
+					fold.deferralCount++;
+					if (fold.deferralCount === 1) {
+						logger.debug("Second Thought fold deferred by unsafe request tail", { generation: fold.generation });
+					}
+					if (fold.deferralCount >= MAX_FOLD_DEFERRALS) this.#retire("deferral-limit");
+				}
 				return result.messages;
 			}
 
 			fold.deliveryCount++;
 			fold.deliveriesRemaining--;
-			this.#replay = { key: requestKey, block: fold.block };
+			this.#replay = { key: requestKey, block: fold.block, epoch: fold.epoch, messages };
 			if (fold.deliveriesRemaining <= 0) this.#retire("delivered");
 			return result.messages;
 		} catch (error) {
@@ -526,7 +564,8 @@ export class SecondThoughtFoldStore {
 		// `delivered` is the truthful reason whenever the fold reached a request,
 		// whatever ended it: a run end or reset landing on an already-delivered fold
 		// must not report it as undelivered.
-		const retireReason: FoldRetireReason = fold.deliveryCount > 0 ? "delivered" : reason;
+		const retireReason: FoldRetireReason =
+			fold.deliveryCount > 0 && reason !== "deferral-limit" ? "delivered" : reason;
 		const entry: SecondThoughtFoldEntry = {
 			version: SECOND_THOUGHT_FOLD_ENTRY_VERSION,
 			generation: fold.generation,
@@ -564,4 +603,8 @@ export class SecondThoughtFoldStore {
 			return {};
 		}
 	}
+}
+
+function sameRequestMessages(left: readonly FoldMessageLike[], right: readonly FoldMessageLike[]): boolean {
+	return left === right || (left.length === right.length && left.every((message, index) => message === right[index]));
 }
