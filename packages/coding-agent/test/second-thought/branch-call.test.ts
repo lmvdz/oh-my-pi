@@ -299,6 +299,7 @@ describe("branch request shape", () => {
 					disableReasoning: true,
 					forceReasoningOff: true,
 					anthropicCacheRefresh: true,
+					onResponse: () => undefined,
 				}),
 			}),
 			"sess-1:side:reflect:1",
@@ -309,6 +310,8 @@ describe("branch request shape", () => {
 		expect(options.disableReasoning).toBeUndefined();
 		expect(options.forceReasoningOff).toBeUndefined();
 		expect(options.anthropicCacheRefresh).toBeUndefined();
+		expect(options.onResponse).toBeUndefined();
+		expect("onResponse" in options).toBe(false);
 		expect("forceReasoningOff" in options).toBe(false);
 		expect(options.reasoning).toBe(Effort.High);
 		expect(options.hideThinkingSummary).toBe(true);
@@ -327,6 +330,21 @@ describe("branch request shape", () => {
 		);
 		expect(options.maxTokens).toBe(512);
 		expect(options.promptCacheKey).toBe("sess-1");
+	});
+
+	it("removes the session response hook after host option preparation", async () => {
+		const calls: ScriptedCall[] = [];
+		const sessionOnResponse = () => undefined;
+		const caller = new BranchCaller({
+			streamFn: scriptedStreamFn([], { calls }),
+			prepareStreamOptions: options => ({ ...options, onResponse: sessionOnResponse }),
+			nextSideCallId: () => "1",
+		});
+
+		await caller.run(request({ streamOptions: hostOptions({ onResponse: sessionOnResponse }) }));
+
+		expect(calls[0]?.options.onResponse).toBeUndefined();
+		expect("onResponse" in (calls[0]?.options ?? {})).toBe(false);
 	});
 
 	it("derives a reflect-scoped side session id", () => {

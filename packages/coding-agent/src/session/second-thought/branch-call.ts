@@ -402,6 +402,9 @@ export function buildBranchSessionId(cacheSessionId: string, uniqueId: string): 
  *   stripping one and trusting the other reopens the hole.
  * - `anthropicCacheRefresh` is an ownership flag for exactly one primary loop;
  *   side-channel requests must leave it unset.
+ * - `onResponse` belongs to the primary session's provider-header ingest path.
+ *   A branch response must not reach that hook: its usage is attributed through
+ *   the ledger under the branch's side session instead.
  *
  * `reasoning`, `hideThinkingSummary`, and `cacheRetention` are passed through
  * untouched — they are part of the primary call's cache identity.
@@ -420,6 +423,7 @@ export function buildBranchStreamOptions(
 		disableReasoning: _disableReasoning,
 		forceReasoningOff: _forceReasoningOff,
 		anthropicCacheRefresh: _anthropicCacheRefresh,
+		onResponse: _onResponse,
 		...base
 	} = request.streamOptions ?? {};
 	return {
@@ -721,8 +725,14 @@ export class BranchCaller {
 			const wireContext = this.#host.obfuscateContext?.(context) ?? context;
 			const options = buildBranchStreamOptions(request, sessionId, controller.signal);
 			const preparedOptions = this.#host.prepareStreamOptions?.(options, request.model.provider) ?? options;
+			// The session's normal option boundary injects its header-ingest hook
+			// when `onResponse` is absent. That attribution is primary-session
+			// scoped, while this call is a side branch; its usage is booked by the
+			// ledger instead. Strip again after host preparation so the hook cannot
+			// leak back into the provider request.
+			const { onResponse: _onResponse, ...outboundOptions } = preparedOptions;
 
-			const stream = await this.#host.streamFn(request.model, wireContext, preparedOptions);
+			const stream = await this.#host.streamFn(request.model, wireContext, outboundOptions);
 			// After a unit-cap abort the loop keeps reading, ignoring content, so
 			// the provider's terminal event (which carries the only authoritative
 			// usage) is not thrown away by an immediate `break`.
