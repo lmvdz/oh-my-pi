@@ -146,6 +146,8 @@ export interface PendingFold {
 	deliveryCount: number;
 	/** Requests that refused injection because of an unsafe tail. */
 	deferralCount: number;
+	/** Injection refusals for reasons other than an unsafe tail (already-present, no-block). */
+	refusalCount: number;
 }
 
 /**
@@ -177,6 +179,7 @@ export interface SecondThoughtFoldEntry {
 	readonly delivered: boolean;
 	readonly deliveryCount: number;
 	readonly deferralCount: number;
+	readonly refusalCount: number;
 	readonly retireReason: FoldRetireReason;
 	/** Skip-reason counters snapshotted from the host's ledger (06), when available. */
 	readonly skips?: Record<string, number>;
@@ -256,9 +259,17 @@ function reflectMarkupUnitIsSafe(unit: string): boolean {
 	return reflectUnits(unit).length === 1;
 }
 
-/** Render the injectable text: framing prose plus one delimited units section. */
+/**
+ * Render the injectable text: framing prose plus one delimited units section.
+ *
+ * Re-caps the markup defensively: this is a public export a host may call with
+ * markup that never went through {@link SecondThoughtFoldStore.accept}, and the
+ * delimiter-escape guarantee must hold at this boundary too. Idempotent for
+ * markup that was already capped.
+ */
 export function buildFoldBlock(markup: string, wrapper: string = FOLD_WRAPPER_TEXT): string {
-	return `${wrapper}\n\n${FOLD_BLOCK_OPEN}\n${markup}\n${FOLD_BLOCK_CLOSE}`;
+	const safeMarkup = capReflectMarkup(markup);
+	return `${wrapper}\n\n${FOLD_BLOCK_OPEN}\n${safeMarkup}\n${FOLD_BLOCK_CLOSE}`;
 }
 
 /**
@@ -451,6 +462,7 @@ export class SecondThoughtFoldStore {
 				deliveriesRemaining: this.#deliveryCalls(),
 				deliveryCount: 0,
 				deferralCount: 0,
+				refusalCount: 0,
 			};
 			this.#pending = fold;
 
@@ -520,6 +532,8 @@ export class SecondThoughtFoldStore {
 						logger.debug("Second Thought fold deferred by unsafe request tail", { generation: fold.generation });
 					}
 					if (fold.deferralCount >= MAX_FOLD_DEFERRALS) this.#retire("deferral-limit");
+				} else {
+					fold.refusalCount++;
 				}
 				return result.messages;
 			}
@@ -585,6 +599,7 @@ export class SecondThoughtFoldStore {
 			delivered: fold.deliveryCount > 0,
 			deliveryCount: fold.deliveryCount,
 			deferralCount: fold.deferralCount,
+			refusalCount: fold.refusalCount,
 			retireReason,
 			...this.#skips(),
 		};
