@@ -62,3 +62,22 @@ file:line claims against its checkout and reports contradictions** (ticket-decay
   gate HOLDS mid-bound, not merely that it releases.
 - Refuted: none. Process lesson: "the gate releases" and "the gate holds until it should"
   are different assertions; for any timeout logic, test the hold, not just the release.
+### ST-03 coordinator lifecycle (#5) — closed 2026-08-17
+- 1 build round + 2 fix rounds (all opus) + 3 gauntlet rounds (r1+r2 dual-lineage, r3
+  codex verify). Ship-blockers stopped by r3, on pattern.
+- r1's grok catch was the campaign's best harness-fidelity lesson: single-fire keyed on
+  partial OBJECT IDENTITY worked perfectly against a stub that reused one object and
+  would have cancel+re-forked on EVERY toolcall_start against the real loop, which
+  deep-snapshots per event. The 'start'-event re-arm path was dead code on the live
+  surface. Rule: a stub host must emit what the real surface emits — new object per
+  event, real replacement-path event sets — or the suite proves nothing about production.
+- r2 found the fix-round regression (settled-tail stealing harvest's handles via the
+  microtask woken by the turn-end abort) and codex found the rewind EMA hole; r3 fixed
+  both with self-probes and the verifier confirmed all probes lethal.
+- Also fixed on the way: in-flight cap off-by-one that would have made the natural
+  anthropic:2 config NEVER fork (the feature would have shipped permanently inert for
+  such users — caught only because a critic checked the boundary against its comment).
+- Builder judgment worth keeping: adaptive-skip probe every 20th qualifying turn so the
+  skip cannot freeze its own EMA input; reset() clears EMAs (they describe one
+  conversation+model pairing).
+- Routed onward: stream-token arming contract + discarded-message_end hazard → #10.
