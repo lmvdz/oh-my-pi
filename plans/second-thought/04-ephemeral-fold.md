@@ -1,5 +1,5 @@
 # Ephemeral fold injection and diagnostic entry
-STATUS: open
+STATUS: done
 PRIORITY: p1
 REPOS: oh-my-pi
 COMPLEXITY: architectural
@@ -49,3 +49,6 @@ on run end; epoch-stale fold never injects; diagnostic entry round-trips through
 reload without entering context (buildSessionContext ignores it); a simulated
 convert-pipeline run shows identical output for all requests except the single delivery
 request.
+
+## Resolution
+Shipped: fold.ts + fold-wrapper.md, merged via second-thought/04-ephemeral-fold (final 1ffa41895e). 2 rounds; delimiter-escape hardening in both layers; replay epoch gate. Issue #6.

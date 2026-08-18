@@ -1,5 +1,5 @@
 # Reflect-unit parser and atom prompt assets
-STATUS: open
+STATUS: done
 PRIORITY: p1
 REPOS: oh-my-pi
 COMPLEXITY: mechanical
@@ -38,3 +38,6 @@ None.
 translated reference test present; malformed-closer cases from the reference README
 (`</refresh>`, `</reflection>`, `</ref lect>`, DSML token) all repaired; nested-control-tag
 and byte-cap rejections covered.
+
+## Resolution
+Shipped: parser + .md prompt assets, merged via second-thought/01-parser-and-prompts (final 81c6af7551). Gauntlet: 2 rounds (opus blind w/ 3000-case python differential + 21-mutant probe; codex verify). Issue #3.

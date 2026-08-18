@@ -1,5 +1,5 @@
 # Cost ledger and instrumentation
-STATUS: open
+STATUS: done
 PRIORITY: p1
 REPOS: oh-my-pi
 COMPLEXITY: architectural
@@ -40,3 +40,6 @@ computation; skip-reason counters; a fake OAuth model reports token-primary. Int
 assertion (wired in 08): on a live or recorded Anthropic exchange, the branch call's
 `cache_read_input_tokens > 0` — this is the DESIGN's acceptance gate for the same-model
 cache strategy (red-team B issue 2 suggestion).
+
+## Resolution
+Shipped: ledger.ts + onResponse strip in branch-call, merged via second-thought/06-cost-ledger (final fc19a4682f). 3 grok rounds; outcome-keyed undercount bound, fork-snapshot ceilings, reset fence. Issue #8.

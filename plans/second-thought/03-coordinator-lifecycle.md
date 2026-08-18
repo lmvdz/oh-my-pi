@@ -1,5 +1,5 @@
 # Coordinator lifecycle state machine
-STATUS: open
+STATUS: done
 PRIORITY: p1
 REPOS: oh-my-pi
 COMPLEXITY: architectural
@@ -58,3 +58,6 @@ abort mid-tool-batch; compaction abort; dispose; session switch; rewind-then-har
 replacement; each skip condition produces the right skip reason and no branch call; no
 branch handle survives any test ("no branch outlives the coordinator" assertion in every
 case); harvest grace never exceeds ~300ms even with a wedged fake stream.
+
+## Resolution
+Shipped: coordinator.ts, merged via second-thought/03-coordinator-lifecycle (final 08b61398b4). 3 rounds; stream-token identity replaced object-identity keying; eager handle publication added to branch-call. Issue #5.

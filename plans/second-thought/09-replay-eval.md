@@ -30,3 +30,6 @@ None.
 A results doc in the plan dir with the metrics above and an explicit recommendation
 (keep experimental / promote / kill). The feature stays default-off until this concern
 closes.
+
+## Status note
+Harness/run in flight on second-thought/09-eval (issue #11); final judgment HITL.

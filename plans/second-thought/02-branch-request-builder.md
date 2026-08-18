@@ -1,5 +1,5 @@
 # Branch request builder and side-call executor
-STATUS: open
+STATUS: done
 PRIORITY: p1
 REPOS: oh-my-pi
 COMPLEXITY: architectural
@@ -51,3 +51,6 @@ Unit tests with a scripted StreamFn: request shape equality against a reference 
 request (system, tools, thinking config, message prefix all byte-equal up to the synthetic
 suffix); abort mid-stream returns partial buffer and does not retry; early-stop at unit
 cap; stagger ordering when K>1; toolUseLeak flagging.
+
+## Resolution
+Shipped: branch-call.ts, merged via second-thought/02-branch-request-builder (final 6aedf87822). 3 gauntlet rounds, dual-lineage; conditioning moved from assistant-suffix to combined user message after the golden test proved wire-prefix divergence (recorded deviation). Issue #4.

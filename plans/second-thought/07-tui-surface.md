@@ -1,5 +1,5 @@
 # TUI surface
-STATUS: open
+STATUS: done
 PRIORITY: p2
 REPOS: oh-my-pi
 COMPLEXITY: mechanical
@@ -29,3 +29,6 @@ None.
 Snapshot/TUI tests for footer segment states (harvested / skipped / disabled) and the
 transcript block when `showInTranscript` is on; tree-selector test confirms the entry is
 neither rendered nor editable there.
+
+## Resolution
+Shipped: status-line segment + diagnostic card + view-model, merged via second-thought/07-tui-surface (final incl. r2b). 2 rounds; width clamps, VT/OSC sanitization, import-boundary test. FooterComponent target in this concern was dead code — live surface is StatusLineComponent. Issue #9.

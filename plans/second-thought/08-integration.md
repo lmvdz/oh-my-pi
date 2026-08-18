@@ -1,5 +1,5 @@
 # AgentSession integration and end-to-end acceptance
-STATUS: open
+STATUS: done
 PRIORITY: p1
 REPOS: oh-my-pi
 COMPLEXITY: architectural
@@ -45,3 +45,6 @@ None.
 Integration suite green including every exit path from 03's list driven through the REAL
 AgentSession (not the stub host); fold visible in same-run next request; repo typecheck/
 lint/test pipeline green; feature off by default confirmed by a no-settings smoke run.
+
+## Resolution
+Shipped: AgentSession wiring (wiring.ts + call sites), merged via second-thought/08-integration (final 29e9857a04). 4 rounds; disabled-path zero-delta enforced at construction; fold re-obfuscation; unconditional resets at committed transitions. Deviations (addBeforeModelCall arming + injection) adjudicated and recorded. Issue #10.

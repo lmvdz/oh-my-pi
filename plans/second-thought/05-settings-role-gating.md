@@ -1,5 +1,5 @@
 # Settings, reflect role, and gating
-STATUS: open
+STATUS: done
 PRIORITY: p1
 REPOS: oh-my-pi
 COMPLEXITY: mechanical
@@ -36,3 +36,6 @@ None.
 Settings schema round-trips (existing schema tests); gate predicate unit tests cover:
 sub-session, non-Anthropic primary, reflect-role resolving to non-Anthropic, reflect-role
 unresolvable (falls back to primary), all-pass.
+
+## Resolution
+Shipped: settings block + reflect role + gating.ts, merged via second-thought/05-settings-role-gating (final 8dad97f8c1). 2 rounds; generic numeric-range clamp added at settings resolution. Issue #7.
