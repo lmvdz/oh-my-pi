@@ -43,3 +43,22 @@ file:line claims against its checkout and reports contradictions** (ticket-decay
 - Process lesson: "tests pass + reference-faithful" and "tests would catch a regression"
   are different properties — the mutation probe is what separates them; keep it in every
   parser-ish gauntlet prompt.
+### ST-02 branch request builder (#4) — closed 2026-08-17
+- 1 build round (opus) + 2 fix rounds (opus, codex terra) + 3 gauntlet rounds (r1+r2
+  dual-lineage codex+grok; r3 codex verify) + 1 orchestrator fixture fix.
+- r1: the dual-lineage pairing earned its cost in one round — codex probed 5 runtime/race
+  defects (stagger no-op, gate deadlock, never-throws holes, usage-on-abort, shared
+  snapshot); grok found the wire-level critical neither tests nor codex saw: the synthetic
+  conditioning ASSISTANT stole latestSurvivingAssistant and rewrote the PREFIX's signed
+  thinking encoding. The r2 fix proved it empirically (golden test) and moved conditioning
+  into the combined user message — a recorded, reopenable deviation from the reference's
+  continuation-prompting shape.
+- r2: fixes verified; grok found the fix-round regression class the doctrine predicts:
+  the user suffix suppresses Fable 5's developer→system upgrade on developer-tailed
+  snapshots → prefix split for that shape; no suffix satisfies both transform policies.
+  Pinned as expected-divergence golden + tail predicate; skip policy routed to ST-03.
+- r3: implementation verified; the surviving mutant was setTimeout's ~1ms clamping of
+  degenerate delays making the mutated gate accidentally bounded — killed by asserting the
+  gate HOLDS mid-bound, not merely that it releases.
+- Refuted: none. Process lesson: "the gate releases" and "the gate holds until it should"
+  are different assertions; for any timeout logic, test the hold, not just the release.
