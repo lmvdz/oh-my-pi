@@ -349,6 +349,9 @@ export type { AdvisorStats, PerAdvisorStat } from "./session-advisors";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
 
+import type { BranchStreamOptions } from "./second-thought/branch-call";
+import { SECOND_THOUGHT_FOLD_CUSTOM_TYPE } from "./second-thought/fold";
+import { instrumentHistoryEpoch, SecondThoughtRuntime } from "./second-thought/wiring";
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
 import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
@@ -617,6 +620,29 @@ export class AgentSession {
 	#disconnectOwnedMcpManager: (() => Promise<void>) | undefined;
 
 	readonly #ttsr: TtsrCoordinator;
+	/**
+	 * Second Thought's coordinator/ledger/fold trio, or `undefined` when the
+	 * feature cannot run in this session at all.
+	 *
+	 * Constructed only for `agentKind === "main"`, with an explicitly supplied
+	 * settings-aware `sideStreamFn`, AND with `secondThought.enabled` true at
+	 * construction. A subagent, a bare-constructed test session, and any session
+	 * that started with the feature off therefore carry exactly zero of it — no
+	 * wrapped `replaceMessages`, no pre-model-call gate, no interceptor work.
+	 *
+	 * The `enabled` half of that gate is load-bearing, not an optimisation.
+	 * `agent-loop.ts` reads `config.beforeModelCall &&
+	 * signal?.aborted` as "stop before the model call", and Second Thought's hook
+	 * is the repo's only registration of `beforeModelCall`. Installing it in a
+	 * disabled session would change that session's abort shape (one provider call
+	 * instead of two on an abort at the gate) purely by existing.
+	 *
+	 * CONSEQUENCE: toggling `secondThought.enabled` ON takes effect at the next
+	 * session, not immediately. Toggling it OFF still takes effect immediately,
+	 * because `gating.ts` re-reads the setting per fork.
+	 */
+	readonly #secondThought: SecondThoughtRuntime | undefined;
+	#secondThoughtDisposers: (() => void)[] = [];
 	readonly #stats: SessionStatsTracker;
 
 	/** One-shot flag for expected internal plan-mode aborts. Approval actions may
@@ -1209,6 +1235,10 @@ export class AgentSession {
 			}
 			this.#loopGuards.recordTurn(messages, context);
 			await this.#prewalk.advanceAtTurnEnd(messages, context);
+			// BEFORE the advisors: their `waitForCatchup` can block for tens of
+			// seconds on a backlog, and Second Thought's harvest grace is 300 ms.
+			// Queueing the harvest behind that wait is the same as not harvesting.
+			if (this.#secondThought) await this.#secondThought.onPrimaryTurnEnd();
 			await this.#advisors.onPrimaryTurnEnd(messages, context?.willContinue, signal);
 			await this.#maintenance.maintainContextMidRun(messages, signal, context);
 		});
@@ -1379,6 +1409,62 @@ export class AgentSession {
 				build: buildAsyncResultBatchMessage,
 			});
 		}
+		// Second Thought (plans/second-thought/DESIGN.md). Main sessions only, and
+		// only when the host handed us the settings-aware stream fn: `#sideStreamFn`
+		// falls back to bare `streamSimple`, which drops provider routing, watchdog
+		// budgets, and the in-flight caps the branch must run under. Constructing
+		// without it would silently ship a differently-shaped side call, so the
+		// feature stays off rather than degrade (branch-call throws on a missing fn).
+		//
+		// `secondThought.enabled` is sampled HERE, once, and not just per fork:
+		// `agent-loop.ts` treats the presence of ANY `beforeModelCall` as an
+		// aborted-gate signal, and this feature owns the repo's only registration
+		// of it, so a disabled session must not install the hook at all. Turning
+		// the setting on therefore takes effect next session; turning it off still
+		// takes effect immediately via `gating.ts`. See second-thought/wiring.ts.
+		this.#secondThought =
+			this.#agentKind === "main" && config.sideStreamFn && this.settings.get("secondThought.enabled")
+				? new SecondThoughtRuntime({
+						settings: this.settings,
+						agentKind: () => this.#agentKind,
+						primaryModel: () => this.model,
+						availableModels: () => this.#modelRegistry.getAvailable(),
+						cacheSessionId: () => this.sessionId,
+						promptCacheKey: () => this.agent.promptCacheKey ?? this.agent.sessionId,
+						branchStreamOptions: model => this.#buildBranchStreamOptions(model),
+						streamFn: config.sideStreamFn,
+						prepareStreamOptions: (options, provider) => this.prepareSimpleStreamOptions(options, provider),
+						deobfuscateText: text => this.#providerBoundary.deobfuscateText(text),
+						// The fold is appended AFTER `transformProviderContext` ran the
+						// outbound redaction, and it carries deobfuscated branch text, so
+						// the wire copy is re-obfuscated at injection. Without this a
+						// branch that quotes a placeholder back hands the provider the
+						// plaintext secret on the very next main call.
+						obfuscateText: text => this.#providerBoundary.obfuscateText(text),
+						estimateContextTokens: () => this.getContextUsage()?.tokens,
+						appendFoldEntry: entry => {
+							this.sessionManager.appendCustomEntry(SECOND_THOUGHT_FOLD_CUSTOM_TYPE, entry);
+						},
+						recordObservedUsage: entry => this.#modelRegistry.authStorage.recordObservedUsage(entry),
+						hasOAuth: provider => this.#modelRegistry.authStorage.hasOAuth(provider),
+						nextSideCallId: () => Snowflake.next(),
+					})
+				: undefined;
+		if (this.#secondThought) {
+			const secondThought = this.#secondThought;
+			// Every history rewrite in the repo funnels through `replaceMessages`;
+			// wrapping it is the enforceable version of "bump the epoch on rewind,
+			// compaction, and replaceMessages".
+			this.#secondThoughtDisposers.push(instrumentHistoryEpoch(this.agent, () => secondThought.bumpHistoryEpoch()));
+			// Fold delivery + fork-context capture. Runs on the fully assembled
+			// provider context, after every transform, main loop only. See
+			// second-thought/wiring.ts for why this and not transformProviderContext.
+			this.#secondThoughtDisposers.push(
+				this.agent.addBeforeModelCall((context, signal) => {
+					secondThought.onProviderCall(context, signal);
+				}),
+			);
+		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			const event: AgentEvent = {
 				type: "message_update",
@@ -1388,6 +1474,9 @@ export class AgentSession {
 			this.#streamingEditGuard.preCache(event);
 			this.#streamingEditGuard.maybeAbort(event);
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
+			// Fork trigger: the coordinator single-fires on the first `toolcall_start`
+			// of an armed stream and never throws back into the loop.
+			this.#secondThought?.onAssistantEvent(assistantMessageEvent);
 		});
 		// Tool-result hook owns synchronous post-tool actions that must affect the current loop.
 		this.agent.afterToolCall = ctx => this.#afterToolCall(ctx);
@@ -1612,6 +1701,7 @@ export class AgentSession {
 			resetTodoCycle: () => this.#todo.resetCycle(),
 			buildDisplaySessionContext: () => this.buildDisplaySessionContext(),
 			resetAdvisorSessionState: () => this.#advisors.resetSessionState(),
+			resetSecondThought: () => this.#secondThought?.reset(),
 			drainAndDetachAdvisorRecorders: () => this.#advisors.drainAndDetachRecorders(),
 			reattachAdvisorRecorderFeeds: () => this.#advisors.reattachRecorderFeeds(),
 			clearAdvisorCost: () => this.#advisors.clearCost(),
@@ -2644,6 +2734,18 @@ export class AgentSession {
 			this.#ttsr.onTurnStart();
 		}
 
+		// Second Thought stream arming. The token is the provider-CALL sequence, not
+		// the message object: agent-loop reassigns `partial` on every event, the
+		// Harmony truncate-resume path re-pushes `message_start` for a message it
+		// recovered without a new provider call, and two further no-content
+		// `message_start`/`message_end` pairs are not replacement streams. All three
+		// carry a seq the real stream already consumed, so `noteStreamStart` no-ops
+		// on them; the Harmony abort-retry does open a new provider call, moves the
+		// seq, and correctly re-arms (cancelling the abandoned stream's fork).
+		if (event.type === "message_start" && event.message.role === "assistant") {
+			this.#secondThought?.noteStreamStart();
+		}
+
 		if (event.type === "turn_end") this.#ttsr.onTurnEnd();
 		// Finalize the tool-choice queue's in-flight yield after tools have executed.
 		// This must happen at turn_end (not message_end) because onInvoked handlers
@@ -2826,6 +2928,10 @@ export class AgentSession {
 
 		// Check auto-retry and auto-compaction after agent completes
 		if (event.type === "agent_end") {
+			// v1 does not carry reflections across a user prompt: a fold that never
+			// reached a request is retired here (its diagnostic entry is still
+			// written, so the turn stays inspectable).
+			this.#secondThought?.onRunEnd();
 			const settledMessages = event.messages;
 			const activeMessages = this.agent.state.messages;
 			// TTSR retry work runs concurrently and clears the live flag before
@@ -3898,6 +4004,23 @@ export class AgentSession {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		// Before the first await, per the contract above: an in-flight branch that
+		// outlives disposal is a leaked provider stream nothing will ever collect.
+		// A dispose that follows an abort is DEFENSE IN DEPTH — the run-signal chain
+		// already killed the branch — but a dispose that does NOT (host teardown
+		// mid-run, process shutdown) is the only thing that ever runs, so this is
+		// load-bearing on its own path. The hook teardown below is unconditional:
+		// it must remove the `beforeModelCall` registration and unwrap
+		// `replaceMessages` whatever else happened.
+		this.#secondThought?.dispose();
+		for (const dispose of this.#secondThoughtDisposers) {
+			try {
+				dispose();
+			} catch (error) {
+				logger.debug("Second Thought hook teardown failed", { error: String(error) });
+			}
+		}
+		this.#secondThoughtDisposers = [];
 		this.#queuedMessageDrainBlocked = false;
 		this.#usagePreflightReadyForNextModelCall = false;
 		this.#detachUsageBeforeQueueDequeue?.();
@@ -4271,6 +4394,9 @@ export class AgentSession {
 		// Re-prime the advisors across the conversation boundary and undo any
 		// memory promotion so the next turn rebuilds from the base system prompt.
 		this.#advisors.resetSessionState();
+		// Conversation boundary: drop the fork and retire the fold rather than let
+		// reflections about the previous transcript reach the next one.
+		this.#secondThought?.reset();
 		await this.#memory.resetContextForNewTranscript();
 
 		// Record a durable boundary on the persisted branch. The collapsed live
@@ -4793,6 +4919,63 @@ export class AgentSession {
 	}
 
 	/** Apply session-level stream hooks to a direct side request. */
+	/**
+	 * Second Thought's runtime, or `undefined` when the feature cannot run here
+	 * (subagent, or a host that supplied no settings-aware stream fn).
+	 *
+	 * Exposed for the TUI surface (ticket 07) and for tests; the session drives
+	 * every lifecycle call itself.
+	 */
+	get secondThought(): SecondThoughtRuntime | undefined {
+		return this.#secondThought;
+	}
+
+	/**
+	 * Base stream options for a Second Thought branch, BEFORE host layering.
+	 *
+	 * Deliberately mirrors the main call's cache identity rather than the
+	 * side-channel shape used by `/btw` and IRC: `sessionId` is left for
+	 * `buildBranchStreamOptions` to fill with the derived side id, and
+	 * `disableReasoning` is omitted because the branch inherits the main call's
+	 * thinking configuration (disabling it collapses the `thinking` block and
+	 * invalidates the Anthropic messages-tier cache the whole feature depends on).
+	 *
+	 * The one thing it deliberately does NOT mirror is `providerSessionState`.
+	 * That map is a per-session degradation ledger the providers WRITE to: a 400
+	 * on the branch would call `disableStrictToolsForScope`, drop the recorded
+	 * reasoning-effort fallback, or flip the fast-mode / unsigned-thinking flags,
+	 * and every one of those mutations would then be read by the PRIMARY call.
+	 * A speculative side call must never be able to degrade the main loop, so each
+	 * branch gets its own throwaway map. Nothing is lost: the map holds no cache
+	 * identity (`promptCacheKey` above carries that), and the branch is a
+	 * single-shot call that never resumes, so a per-call map has nothing to carry
+	 * forward. Entries the branch mints die with the map — `close()` is a
+	 * websocket/transport teardown for long-lived Codex sessions, and Second
+	 * Thought's gate admits Anthropic Messages models only, which mint none.
+	 *
+	 * This runs once per FORK, so the (identical, speculative) branches of one
+	 * fan-out share that fork's map. That is deliberate — degradation learned by
+	 * branch 1 is correct for branch 2, and they die together. The isolation that
+	 * matters is from the primary, and it is total.
+	 */
+	#buildBranchStreamOptions(model: Model): BranchStreamOptions | undefined {
+		try {
+			return {
+				apiKey: this.#modelRegistry.resolver(model, this.sessionId),
+				promptCacheKey: this.agent.promptCacheKey ?? this.agent.sessionId,
+				preferWebsockets: this.#preferWebsockets,
+				providerSessionState: new Map<string, ProviderSessionState>(),
+				reasoning: toReasoningEffort(this.thinkingLevel),
+				hideThinkingSummary: this.agent.hideThinkingSummary,
+				cacheRetention: undefined,
+				serviceTier: this.#models.effectiveServiceTier(model),
+			} as BranchStreamOptions;
+		} catch (error) {
+			logger.debug("Second Thought branch stream options unavailable", { error: String(error) });
+			return undefined;
+		}
+	}
+
 	prepareSimpleStreamOptions(options: SimpleStreamOptions, provider = "anthropic"): SimpleStreamOptions {
 		return this.#providerBoundary.prepareSimpleStreamOptions(options, provider);
 	}
@@ -6628,6 +6811,15 @@ export class AgentSession {
 		// auto-starting a fresh turn during cleanup.
 		this.#abortInProgress = true;
 		try {
+			// DEFENSE IN DEPTH, deliberately kept. Every branch is chained to the
+			// run's own abort signal (`wiring.ts#prepareFork` passes `#runSignal`
+			// straight through), so aborting the run already tears the branch down
+			// without this line. It stays because it is synchronous and lands before
+			// any await here, which makes teardown independent of whether a run
+			// signal was captured at all (a gate that failed to install, a fork taken
+			// from a call with no signal). Cheap, idempotent, and what it guards
+			// against is a leaked provider stream.
+			this.#secondThought?.cancelActive("session-abort");
 			this.#abortAutolearnCapture();
 			for (const controller of this.#usagePreflightAbortControllers) controller.abort();
 			this.abortRetry();
@@ -6766,6 +6958,7 @@ export class AgentSession {
 			this.#planReferenceSent = false;
 			this.#planReferencePath = "local://PLAN.md";
 			this.#advisors.resetSessionState();
+			this.#secondThought?.reset();
 			advisorRecordersDetached = false;
 			this.#reconnectToAgent();
 			// The workspace-roots block must reflect the new session's directory set,
@@ -7171,6 +7364,8 @@ export class AgentSession {
 		}
 		this.agent.replaceMessages(activeMessages ?? sessionContext.messages);
 		this.#advisors.resetSessionState({ preserveCost: true });
+		this.#secondThought?.reset();
+
 		this.#todo.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 		this.#checkpointState = undefined;
@@ -7270,6 +7465,15 @@ export class AgentSession {
 		// retry-fallback on the error path.
 		if (isChanging) {
 			this.#emit({ type: "model_changed" });
+			// A live fork was taken against the OLD model's request shape: same
+			// system prompt, same tools, same thinking config, same cache prefix.
+			// None of that survives a model switch, and neither does a fold
+			// harvested from it — the reflections were conditioned on a call the
+			// session is no longer making. `docs/second-thought.md` has listed
+			// model change under `reset()` since the design; this is the call site
+			// that makes that true. Every ModelControls path (explicit `/model`,
+			// prewalk handoff, retry-fallback, cycling) funnels through here.
+			this.#secondThought?.reset();
 		}
 
 		// Re-evaluate append-only context mode — provider or setting may have changed
@@ -7839,6 +8043,7 @@ export class AgentSession {
 
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#advisors.resetSessionState({ preserveCost: true });
+			this.#secondThought?.reset();
 			this.#todo.syncFromBranch();
 			if (switchingToDifferentSession) {
 				this.#closeAllProviderSessions("session switch");
@@ -8006,6 +8211,7 @@ export class AgentSession {
 			}
 			this.#todo.syncFromBranch();
 			this.#advisors.resetAllRuntimes();
+			this.#secondThought?.reset();
 			this.#advisors.reattachRecorderFeeds();
 			this.#reconnectToAgent();
 			try {
@@ -8085,17 +8291,29 @@ export class AgentSession {
 					const title = this.sessionManager.getSessionName();
 					const titleSource = this.sessionManager.titleSource;
 					await this.sessionManager.newSession({ parentSession: previousSessionFile });
+					// The conversation boundary is crossed the moment newSession()
+					// returns — mark it BEFORE the cosmetic rename, so a throwing
+					// setSessionName cannot leave the transition unrecorded (and the
+					// finally-side resets un-fired). Issue #10 gauntlet r3.
+					sessionTransitioned = true;
 					if (title) await this.sessionManager.setSessionName(title, titleSource);
 				} else {
 					this.sessionManager.createBranchedSession(selectedEntry.parentId);
+					sessionTransitioned = true;
 				}
 				this.#bash.markSessionTransition(bashTransition);
 				this.#advisors.clearCost();
-				sessionTransitioned = true;
 			} finally {
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
 			}
 			this.#clearSessionScopedToolState();
+			// Second Thought lifecycle is reset UNCONDITIONALLY once the branch
+			// session has committed — even when an extension returns
+			// skipConversationRestore (which only governs message restoration): a
+			// live fork or pending fold must never survive into the new session
+			// (issue #10 gauntlet r2). Idempotent; the conditional block below no
+			// longer owns it.
+			this.#secondThought?.reset();
 			this.#rehydrateCheckpointRewindState();
 			this.#todo.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
@@ -8125,6 +8343,10 @@ export class AgentSession {
 			advisorRecordersDetached = false;
 			return { selectedText, selectedImages, cancelled: false };
 		} finally {
+			// Mirror for exceptions between the transition commit and the inline
+			// reset above (e.g. a throwing session_branch handler): a committed
+			// transition must never leave Second Thought state alive. Idempotent.
+			if (sessionTransitioned) this.#secondThought?.reset();
 			if (advisorRecordersDetached) {
 				if (sessionTransitioned) this.#advisors.resetSessionState();
 				else this.#advisors.reattachRecorderFeeds();
@@ -8245,6 +8467,7 @@ export class AgentSession {
 
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#advisors.resetSessionState();
+			this.#secondThought?.reset();
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 			advisorRecordersDetached = false;
 
@@ -8556,6 +8779,8 @@ export class AgentSession {
 		this.agent.replaceMessages(displayContext.messages);
 		this.#rehydrateCheckpointRewindState();
 		this.#advisors.resetSessionState({ preserveCost: true });
+		this.#secondThought?.reset();
+
 		this.#todo.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 

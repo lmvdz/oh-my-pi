@@ -89,6 +89,7 @@ Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 - [session-operations-export-share-fork-resume.md](../../docs/session-operations-export-share-fork-resume.md)
 - [compaction.md](../../docs/compaction.md) — compaction and branch summaries
 - [ttsr-injection-lifecycle.md](../../docs/ttsr-injection-lifecycle.md)
+- [second-thought.md](../../docs/second-thought.md) — background reflection branches (default off)
 - [non-compaction-retry-policy.md](../../docs/non-compaction-retry-policy.md)
 - [handoff-generation-pipeline.md](../../docs/handoff-generation-pipeline.md)
 

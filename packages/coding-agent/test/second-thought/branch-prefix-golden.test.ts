@@ -23,6 +23,7 @@ import {
 	snapshotBranchContext,
 	snapshotTailIsDeveloper,
 } from "../../src/session/second-thought/branch-call";
+import { buildFoldBlock, buildFoldMessage } from "../../src/session/second-thought/fold";
 
 /**
  * GOLDEN PREFIX TEST — the acceptance gate for Second Thought's cache economics.
@@ -366,5 +367,44 @@ describe("golden prefix under flipped parity flags", () => {
 			now: 999,
 		});
 		expect(encodedPrefix(branch.messages, mainLength)).toBe(goldenPrefix);
+	});
+});
+
+/**
+ * The wiring's own prefix obligation (ticket 08).
+ *
+ * Ticket 08 forks from the provider context the main call is ACTUALLY sending —
+ * captured after the fold was injected, not reconstructed from session history.
+ * That means the fold block, when one is delivered, is part of the main call's
+ * cache prefix, and the branch must inherit it verbatim. This extends the golden
+ * fixture above rather than restating it: same `mainContext()`, same encoder,
+ * one extra tail message.
+ */
+describe("golden prefix with a delivered fold on the main call", () => {
+	/** `mainContext()` as the request assembler leaves it after fold injection. */
+	function mainContextWithFold(): Context {
+		const base = mainContext();
+		const block = buildFoldBlock('<reflect type="check">The placeholder result may hide a real failure.</reflect>');
+		return { ...base, messages: [...base.messages, buildFoldMessage(block, 400)] };
+	}
+
+	it("keeps the branch prefix byte-identical when the main call ends in a fold block", () => {
+		const main = mainContextWithFold();
+		const goldenPrefix = encode(main.messages);
+		const mainLength = encodedParams(main.messages).length;
+
+		const snap = snapshotBranchContext(main, MODEL, 500);
+		const branch = buildBranchContext(snap, { conditioningText: "Re-check the abandoned tool call.", now: 600 });
+
+		expect(encodedParams(branch.messages)).toHaveLength(mainLength + 1);
+		expect(encodedPrefix(branch.messages, mainLength)).toBe(goldenPrefix);
+	});
+
+	it("a fold tail is a user tail, so it never triggers the developer-tail skip", () => {
+		// The developer-tail policy exists because that role is upgraded to
+		// mid-conversation `system`; the fold is deliberately `user` for the same
+		// reason, which is also what keeps it forkable.
+		expect(snapshotTailIsDeveloper(mainContextWithFold().messages)).toBe(false);
+		expect(mainContextWithFold().messages.at(-1)?.role).toBe("user");
 	});
 });

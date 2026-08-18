@@ -3182,7 +3182,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "context",
 			group: "Second Thought",
 			label: "Second Thought",
-			description: "Generate background reflections while tool calls run.",
+			description:
+				"Generate background reflections while tool calls run. Turning this on takes effect in the next session — the pre-model-call hook it needs is installed at session construction, and installing it in a session that has the feature off would change that session's abort behaviour. Turning it off takes effect immediately.",
 		},
 	},
 
