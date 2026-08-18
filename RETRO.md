@@ -17,3 +17,16 @@ file:line claims against its checkout and reports contradictions** (ticket-decay
 ## Entries
 
 (none yet)
+### ST-05 settings/role/gating (#7) — closed 2026-08-17
+- 1 build round (codex terra) + 2 fix rounds + 2 gauntlet rounds (codex terra, blind).
+- r1 caught: branchCount max=4 was UI-only — reproduced live (isolated 5 → read 5); fixed
+  with a GENERIC clamp at the settings resolution site (benefits every ranged NumberDef).
+- r2 verified all r1 findings fixed; residual LOW (no lower-bound regression test) closed
+  by a one-line orchestrator edit, adjudicated as not worth a lane cycle.
+- Refuted/none. Confirmed: `anthropic-messages` is the correct api predicate (Vertex
+  Claude shares it; Bedrock correctly excluded).
+- Process lesson (cost an extra round-trip): committing in a `worktree add --detach` tree
+  and pushing the BRANCH NAME pushes the stale tip — the new commit dangles. Caught by an
+  expect-count mismatch (21 vs 22) on the merged tree. Rule: land on a checked-out branch,
+  or push the sha explicitly; always re-verify the merged tree's test counts against the
+  lane's.
