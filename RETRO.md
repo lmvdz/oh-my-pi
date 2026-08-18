@@ -155,3 +155,32 @@ file:line claims against its checkout and reports contradictions** (ticket-decay
 - Deviations recorded: arming + fold injection via addBeforeModelCall (adjudicated by
   both lineages against the loop's real ordering); reopen if agent-loop's hook
   semantics change.
+### ST-09 eval (#11) — harness delivered 2026-08-18; ticket stays OPEN (hitl judgment)
+- Scripted lane only: the live lane is blocked on an Anthropic credential (gate requires
+  anthropic-messages api on both models; headless CLI verified working). Six live
+  fixtures were built and DISCARDED rather than run against a provider the gate
+  rejects — the honest null beats a fake number.
+- Measured: turn-end overhead ≤3.1ms p95; fork harvests iff the branch settles before
+  turn end (the 300ms grace rescues nothing in the scripted harness — verify against a
+  real streaming abort before treating as a product fact); every lost fork books the
+  2048-token undercount bound; 18/18 byte-identical prefixes; cost ≈ one extra
+  same-prefix call per turn.
+- Unmeasured and honestly labeled: adoption, task outcome, real branch latency, live
+  cache-read rate — the entire value claim awaits a live pass.
+- Leftover discovered: ledger report() has no user surface; the 07 view-model ↔ 08
+  wiring seam is an explicit TODO. Filed as follow-up on the map.
+
+## Campaign retro (phase boundary, 2026-08-18)
+- 8/9 tickets closed across 21 gauntlet rounds; every ship-blocker stopped by round 3-4.
+  Every round's top finding was real; zero rounds were empty apparatus.
+- Dual-lineage pairing paid for itself repeatedly: grok caught wire/transform/accounting
+  defects codex couldn't run; codex caught runtime races grok couldn't execute; the
+  Claude execution critics caught what only driving the real system shows (disabled-path
+  delta, TUI width/escape injection, harness-fidelity holes).
+- Rule pruned per staying-youthful: the "≤300ms grace" invariant is DEMOTED from design
+  fact to open question — the eval shows the sync abort may make it dead weight; the
+  live lane should decide whether it stays or goes.
+- Reopens this campaign: 2 (ST-06 skipped-findings round; ST-08 skip-restore→flag-order
+  chain) — healthy nonzero.
+- Cost: ~3.5-4M subagent/CLI output tokens across ~45 lanes (per-lane figures in the
+  session transcripts; largest: ST-08 build 284k, codex ST-08 fresh-look 261k).
