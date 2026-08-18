@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 const TUI_SURFACE_SOURCES = [
 	new URL("../../src/modes/components/second-thought-view.ts", import.meta.url),
 	new URL("../../src/modes/components/status-line/segments.ts", import.meta.url),
+	new URL("../../src/modes/components/second-thought-diagnostic.ts", import.meta.url),
 ];
 
 describe("Second Thought TUI surface boundary", () => {

@@ -193,7 +193,7 @@ describe("Second Thought transcript card", () => {
 		});
 		const component = loadedCard(entry, 0.0041, true);
 
-		for (const width of [40, 60, 80, 120]) {
+		for (const width of [20, 40, 60, 80, 120]) {
 			for (const line of component.render(width)) {
 				expect(Bun.stringWidth(Bun.stripANSI(line))).toBeLessThanOrEqual(width);
 			}

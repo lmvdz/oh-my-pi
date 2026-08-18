@@ -54,6 +54,8 @@ function contextFor(view: SecondThoughtStatusView | undefined, implemented = tru
 describe("second_thought status-line segment", () => {
 	it("ships in the default status-line preset", () => {
 		expect(STATUS_LINE_PRESETS.default.leftSegments).toContain("second_thought");
+		expect(STATUS_LINE_PRESETS.full.leftSegments).toContain("second_thought");
+		expect(STATUS_LINE_PRESETS.nerd.leftSegments).toContain("second_thought");
 	});
 
 	it("is omitted when the feature is disabled", () => {
