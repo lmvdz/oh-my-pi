@@ -40,16 +40,11 @@
  * to the primary account window regardless of the side session id the branch
  * streamed under.
  *
- * NOTE FOR 08 (verified against this tree, reported on issue #8): the side
- * session id from 02 is NOT sufficient isolation on its own.
- * `buildBranchStreamOptions` (02) spreads the host stream options through, and
- * `SessionProviderBoundary.prepareSimpleStreamOptions` INJECTS the session's
- * `onResponse` — which is what invokes `ingestProviderUsageHeaders`. Branch
- * options layered through that helper therefore still reach the primary ingest
- * path. Closing it needs an edit in 02 or 08 (strip `onResponse` for branch
- * calls, or key the ingest off the stream option's `sessionId`); the ledger
- * records the side session id on every record so the double-count is at least
- * detectable from here.
+ * The branch caller strips `onResponse` both before and after host option
+ * preparation. The second strip matters because
+ * `SessionProviderBoundary.prepareSimpleStreamOptions` injects the primary
+ * session's header-ingest hook when it sees none. Branch usage therefore only
+ * reaches the broker through this ledger, under the record's side session id.
  *
  * ## The undercount is bounded, not observed
  *
@@ -292,6 +287,8 @@ interface MutableRollup {
 	model: string;
 	provider: string;
 	branchCount: number;
+	/** Snapshot at fork time; a drained branch must not see a later settings edit. */
+	branchMaxTokens: number;
 	recordedBranches: number;
 	tokens: MutableSplit;
 	costUsd: MutableCost;
@@ -461,7 +458,8 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 	 */
 	recordBranchResult(result: BranchCallResult, info: SecondThoughtForkInfo): void {
 		try {
-			const record = this.#buildRecord(result, info);
+			const rollup = this.#rollupFor(info);
+			const record = this.#buildRecord(result, info, rollup.branchMaxTokens);
 			this.#branches++;
 			this.#terminations[record.termination]++;
 			addSplit(this.#tokens, record.tokens);
@@ -469,7 +467,6 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 			this.#undercountBoundTokens += record.undercountBoundTokens;
 			if (!record.usageObserved) this.#branchesWithoutUsage++;
 
-			const rollup = this.#rollupFor(info);
 			rollup.recordedBranches++;
 			rollup.terminations[record.termination]++;
 			addSplit(rollup.tokens, record.tokens);
@@ -590,7 +587,7 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 
 	/** Retained per-branch rows, oldest first. */
 	records(): readonly SecondThoughtBranchRecord[] {
-		return [...this.#records];
+		return this.#records.map(freezeRecord);
 	}
 
 	/** The whole picture, for 04's diagnostic entry and 07's TUI. */
@@ -651,7 +648,11 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 		}
 	}
 
-	#buildRecord(result: BranchCallResult, info: SecondThoughtForkInfo): SecondThoughtBranchRecord {
+	#buildRecord(
+		result: BranchCallResult,
+		info: SecondThoughtForkInfo,
+		branchMaxTokens: number,
+	): SecondThoughtBranchRecord {
 		const termination = terminationOf(result);
 		const tokens = splitUsage(result.usage);
 		const { cost, fromCostTable } = this.#priceUsage(info, result.usage);
@@ -673,23 +674,23 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 			costUsd: cost,
 			usageObserved: result.usage !== undefined,
 			costFromCostTable: fromCostTable,
-			undercountBoundTokens: this.#undercountBound(termination, tokens.output),
+			undercountBoundTokens: this.#undercountBound(result.outcome, tokens.output, branchMaxTokens),
 			error: result.error,
 		};
 	}
 
 	/**
 	 * The bound applies to every stream that did NOT end naturally — cancelled,
-	 * unit-capped, and errored alike. All three disconnect mid-decode; only a
-	 * `completed` stream carries a terminal usage event that closes the account.
-	 * A unit-cap abort drains a few more events looking for that terminal usage
-	 * (02), so its bound is often the loosest part of a tight estimate — which is
-	 * the correct failure direction for an upper bound.
+	 * unit-capped, and errored alike. The raw stream outcome, rather than the
+	 * ledger's display termination, decides this: a naturally completed call can
+	 * still be labelled `tool-use-leak`, but it received terminal usage and has no
+	 * unobserved tail. A unit-cap abort drains a few more events looking for that
+	 * terminal usage (02), so its bound is often the loosest part of a tight
+	 * estimate — which is the correct failure direction for an upper bound.
 	 */
-	#undercountBound(termination: SecondThoughtTermination, observedOutput: number): number {
-		if (termination === "completed") return 0;
-		const max = this.#branchMaxTokens();
-		return Math.max(0, max - observedOutput);
+	#undercountBound(outcome: BranchCallOutcome, observedOutput: number, branchMaxTokens: number): number {
+		if (outcome === "completed") return 0;
+		return Math.max(0, branchMaxTokens - observedOutput);
 	}
 
 	#branchMaxTokens(): number {
@@ -802,6 +803,7 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 			model: info.model,
 			provider: info.provider,
 			branchCount: info.branchCount,
+			branchMaxTokens: this.#branchMaxTokens(),
 			recordedBranches: 0,
 			tokens: emptySplit(),
 			costUsd: emptyCost(),
@@ -830,7 +832,7 @@ export class SecondThoughtLedger implements SecondThoughtLedgerSink {
 	 * authoritative figures either way.
 	 */
 	#trimRollups(): void {
-		const cap = Math.max(1, this.#recordCap);
+		const cap = this.#recordCap;
 		while (this.#rollupOrder.length > cap) {
 			const oldest = this.#rollupOrder.shift();
 			if (oldest !== undefined) this.#rollups.delete(oldest);
@@ -853,6 +855,14 @@ function freezeRollup(rollup: MutableRollup): SecondThoughtForkRollup {
 		harvestedUnits: rollup.harvestedUnits,
 		windowMs: rollup.windowMs,
 		terminations: { ...rollup.terminations },
+	};
+}
+
+function freezeRecord(record: SecondThoughtBranchRecord): SecondThoughtBranchRecord {
+	return {
+		...record,
+		tokens: freezeSplit(record.tokens),
+		costUsd: freezeCost(record.costUsd),
 	};
 }
 

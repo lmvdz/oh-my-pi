@@ -306,6 +306,14 @@ describe("SecondThoughtLedger undercount bound", () => {
 		expect(ledger.undercountBoundTokens).toBe(0);
 	});
 
+	it("does not invent an unobserved tail for a completed tool-use leak", () => {
+		const { ledger } = ledgerWith({ branchMaxTokens: () => 2_048 });
+		ledger.recordBranchResult(branchResult({ toolUseLeak: true, usage: usage({ output: 400 }) }), forkInfo());
+		const record = ledger.report().records[0];
+		expect(record?.termination).toBe("tool-use-leak");
+		expect(record?.undercountBoundTokens).toBe(0);
+	});
+
 	it("is branchMaxTokens minus observed output for a cancelled stream", () => {
 		const { ledger } = ledgerWith({ branchMaxTokens: () => 2_048 });
 		ledger.recordBranchResult(branchResult({ outcome: "aborted", usage: usage({ output: 400 }) }), forkInfo());
@@ -355,6 +363,15 @@ describe("SecondThoughtLedger undercount bound", () => {
 			forkInfo({ generation: 2 }),
 		);
 		expect(ledger.report().undercountBoundTokens).toBe(400 + 300);
+	});
+
+	it("uses the fork-time ceiling for a cancelled branch drained after settings change", () => {
+		let ceiling = 2_048;
+		const { ledger } = ledgerWith({ branchMaxTokens: () => ceiling });
+		ledger.recordFork(forkInfo());
+		ceiling = 256;
+		ledger.recordBranchResult(branchResult({ outcome: "aborted", usage: usage({ output: 400 }) }), forkInfo());
+		expect(ledger.report().records[0]?.undercountBoundTokens).toBe(1_648);
 	});
 });
 
@@ -590,6 +607,7 @@ describe("SecondThoughtLedger retention", () => {
 		const ledger = new SecondThoughtLedger({}, { recordCap: 0 });
 		ledger.recordBranchResult(branchResult({ usage: usage({ output: 10 }) }), forkInfo());
 		expect(ledger.report().records).toHaveLength(0);
+		expect(ledger.report().rollups).toHaveLength(0);
 		expect(ledger.report().tokens.output).toBe(10);
 	});
 
@@ -626,8 +644,10 @@ describe("SecondThoughtLedger retention", () => {
 		ledger.recordBranchResult(branchResult({ usage: usage({ output: 10 }) }), forkInfo());
 		const report = ledger.report();
 		(report.records as unknown as unknown[]).push({} as never);
+		(report.records[0]?.tokens as { output: number }).output = 9_999;
 		(report.tokens as { output: number }).output = 9_999;
 		expect(ledger.report().records).toHaveLength(1);
+		expect(ledger.report().records[0]?.tokens.output).toBe(10);
 		expect(ledger.report().tokens.output).toBe(10);
 	});
 });
