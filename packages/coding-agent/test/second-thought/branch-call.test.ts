@@ -668,6 +668,75 @@ describe("BranchCaller stagger", () => {
 	});
 });
 
+describe("BranchCaller.startManyEager", () => {
+	it("publishes handle 0 synchronously and grows the SAME array when the gate lifts", async () => {
+		const calls: ScriptedCall[] = [];
+		const caller = new BranchCaller({
+			streamFn: scriptedStreamFn(['<reflect type="check">a</reflect>', "tail"], { calls }),
+		});
+
+		const fanOut = caller.startManyEager(3, request());
+		// Before any await at all: the caller already has something to abort.
+		expect(fanOut.handles).toHaveLength(1);
+		expect(calls).toHaveLength(1);
+
+		const settled = await fanOut.settled;
+		expect(settled).toBe(fanOut.handles);
+		expect(fanOut.handles).toHaveLength(3);
+		expect(calls).toHaveLength(3);
+		expect(new Set(fanOut.handles.map(handle => handle.sessionId)).size).toBe(3);
+		await Promise.all(fanOut.handles.map(handle => handle.result));
+	});
+
+	it("starts nothing beyond call 1 when the caller aborts synchronously", async () => {
+		const calls: ScriptedCall[] = [];
+		const controller = new AbortController();
+		const caller = new BranchCaller({
+			streamFn: scriptedStreamFn(['<reflect type="check">a</reflect>'], { calls }),
+		});
+
+		const fanOut = caller.startManyEager(4, request({ signal: controller.signal }));
+		expect(fanOut.handles).toHaveLength(1);
+		// Same tick, no await: exactly what the coordinator's teardown paths do.
+		controller.abort("torn down");
+
+		const settled = await fanOut.settled;
+		expect(settled).toHaveLength(1);
+		expect(calls).toHaveLength(1);
+		expect((await settled[0]!.result).outcome).toBe("aborted");
+	});
+
+	it("resolves immediately for K=1 and K=0", async () => {
+		const caller = new BranchCaller({ streamFn: scriptedStreamFn(["a"], { holdAfter: 0 }) });
+		const one = caller.startManyEager(1, request());
+		expect(one.handles).toHaveLength(1);
+		expect(await one.settled).toBe(one.handles);
+		one.handles[0]?.abort();
+		await one.handles[0]?.result;
+
+		const none = caller.startManyEager(0, request());
+		expect(none.handles).toEqual([]);
+		expect(await none.settled).toEqual([]);
+	});
+
+	it("is what startMany delegates to — identical stagger observable", async () => {
+		const calls: ScriptedCall[] = [];
+		let callsAtFirstDelta = -1;
+		const caller = new BranchCaller({
+			streamFn: scriptedStreamFn(['<reflect type="check">a</reflect>', "tail"], {
+				calls,
+				onDelta: () => {
+					if (callsAtFirstDelta === -1) callsAtFirstDelta = calls.length;
+				},
+			}),
+		});
+		const handles = await caller.startMany(3, request());
+		expect(callsAtFirstDelta).toBe(1);
+		expect(handles).toHaveLength(3);
+		await Promise.all(handles.map(handle => handle.result));
+	});
+});
+
 describe("BranchCaller never throws", () => {
 	const hooks = [
 		["obfuscateContext", { obfuscateContext: () => throwing("obfuscate exploded") }],

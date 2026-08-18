@@ -233,6 +233,41 @@ export interface BranchCallHandle {
 }
 
 /**
+ * An in-progress K-way fan-out whose FIRST handle is available synchronously.
+ *
+ * `startMany` cannot publish anything until the stagger gate lifts, which is by
+ * design a multi-second wait. A caller that must be able to cancel or harvest
+ * during that wait (ticket 03's coordinator: the primary tool batch can finish
+ * long before branch 1 emits its first token) therefore has no handle to abort
+ * and no settled units to collect — the fan-out is invisible for exactly the
+ * window in which it is most likely to be torn down.
+ *
+ * This shape fixes that without changing the stagger economics:
+ * {@link EagerBranchFanOut.handles} is a LIVE array holding call 1 from the
+ * moment `startManyEager` returns, and it grows in place when the gate lifts.
+ * Cancellation is expressed through {@link BranchCallRequest.signal}: an
+ * already-aborted signal stops the queued branches from ever starting, so a
+ * caller that aborts synchronously pays for one branch, not K.
+ *
+ * Module ownership stays with ticket 02 (issue #4); the shape was requested by
+ * ticket 03's gauntlet round 1 (issue #5) and is the minimal change that closes
+ * it — `startMany` is unchanged behaviourally and now delegates here.
+ */
+export interface EagerBranchFanOut {
+	/**
+	 * Live handle array. Index 0 exists on return; indices 1..K−1 are appended
+	 * when the stagger gate lifts (and never appear at all if the fan-out was
+	 * cancelled first). Callers that hold this array observe the growth.
+	 */
+	readonly handles: BranchCallHandle[];
+	/**
+	 * Resolves with the same array once the stagger has finished deciding.
+	 * Never rejects.
+	 */
+	readonly settled: Promise<BranchCallHandle[]>;
+}
+
+/**
  * Deep copy with `structuredClone` ONLY.
  *
  * The former `JSON.parse(JSON.stringify(...))` fallback silently corrupted
@@ -565,22 +600,55 @@ export class BranchCaller {
 	 * the caller aborted or call 1 settled `aborted`/`error`: firing K−1 more
 	 * calls into a turn that is being torn down, or against a provider that
 	 * just failed, spends real money for output nobody will harvest.
+	 *
+	 * Identity, post-delegation: this now awaits {@link startManyEager}, so the
+	 * array it resolves to is that fan-out's LIVE array — the same object as
+	 * {@link EagerBranchFanOut.handles}, not a fresh copy. By the time the promise
+	 * resolves the stagger has decided, so the array no longer grows and a caller
+	 * that only awaits `startMany` cannot observe the difference. A caller that
+	 * holds both must not assume they are distinct arrays: mutating the result
+	 * mutates the fan-out's view, and vice versa. Copy at the use site if you need
+	 * a stable snapshot.
 	 */
 	async startMany(count: number, request: BranchCallRequest): Promise<BranchCallHandle[]> {
+		return await this.startManyEager(count, request).settled;
+	}
+
+	/**
+	 * {@link BranchCaller.startMany} with the first handle published
+	 * SYNCHRONOUSLY — see {@link EagerBranchFanOut} for why that matters.
+	 *
+	 * Identical stagger semantics: call 1 fires alone, calls 2..K wait on its
+	 * first streamed text delta (bounded by the configured first-event timeout,
+	 * the caller signal, and call 1 settling), and the queued calls are dropped
+	 * rather than merely un-staggered when the caller aborted or call 1 failed.
+	 * `startMany` delegates here, so there is one implementation of the gate.
+	 */
+	startManyEager(count: number, request: BranchCallRequest): EagerBranchFanOut {
 		const total = Math.max(0, Math.trunc(count));
-		if (total === 0) return [];
+		const handles: BranchCallHandle[] = [];
+		if (total === 0) return { handles, settled: Promise.resolve(handles) };
+
 		const first = this.start(request);
-		if (total === 1) return [first];
+		handles.push(first);
+		if (total === 1) return { handles, settled: Promise.resolve(handles) };
 
-		await this.#awaitStaggerGate(first, request);
-
-		if (request.signal?.aborted) return [first];
-		const firstResult = first.settledResult();
-		if (firstResult && (firstResult.outcome === "aborted" || firstResult.outcome === "error")) return [first];
-
-		const rest: BranchCallHandle[] = [];
-		for (let index = 1; index < total; index++) rest.push(this.start(request));
-		return [first, ...rest];
+		const settled = (async () => {
+			try {
+				await this.#awaitStaggerGate(first, request);
+				// Re-checked AFTER the gate, on the live signal: a caller that
+				// aborted during the wait must never be charged for calls 2..K.
+				if (request.signal?.aborted) return handles;
+				const firstResult = first.settledResult();
+				if (firstResult && (firstResult.outcome === "aborted" || firstResult.outcome === "error")) return handles;
+				for (let index = 1; index < total; index++) handles.push(this.start(request));
+			} catch {
+				// The fan-out contract is never-throws; a gate failure degrades to
+				// the single un-staggered branch already published.
+			}
+			return handles;
+		})();
+		return { handles, settled };
 	}
 
 	async #awaitStaggerGate(first: BranchCallHandle, request: BranchCallRequest): Promise<void> {
