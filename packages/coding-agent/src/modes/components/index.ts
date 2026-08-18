@@ -24,6 +24,8 @@ export * from "./model-picker";
 export * from "./oauth-selector";
 export * from "./queue-mode-selector";
 export * from "./read-tool-group";
+export * from "./second-thought-diagnostic";
+export * from "./second-thought-view";
 export * from "./segment-track";
 export * from "./session-selector";
 export * from "./settings-selector";

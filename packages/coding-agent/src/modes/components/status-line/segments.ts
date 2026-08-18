@@ -3,11 +3,13 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
+import type { SymbolKey } from "../../../modes/theme/symbols";
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { fileHyperlink } from "../../../tui/hyperlink";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
+import type { SecondThoughtSkipBucket, SecondThoughtStatusHost } from "../second-thought-view";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./context-thresholds";
 import type { RenderedSegment, SegmentContext, StatusLineSegment, StatusLineSegmentId } from "./types";
 
@@ -682,6 +684,58 @@ const usageSegment: StatusLineSegment = {
 	},
 };
 
+/**
+ * Skip bucket → glyph and color.
+ *
+ * Four buckets, not fourteen reasons: a status-line glyph can only answer
+ * "whose problem is it?". The verbatim reason lives in the transcript card
+ * (`secondThought.showInTranscript`). Colors follow the advisor badge's
+ * precedent — semantic status colors rather than a `statusLine*` alias, so the
+ * marker stays legible against every preset.
+ */
+const SECOND_THOUGHT_SKIP_DISPLAY: Readonly<Record<SecondThoughtSkipBucket, { glyph: SymbolKey; color: ThemeColor }>> =
+	{
+		gated: { glyph: "status.disabled", color: "dim" },
+		window: { glyph: "status.shadowed", color: "muted" },
+		provider: { glyph: "status.warning", color: "warning" },
+		error: { glyph: "status.error", color: "error" },
+	};
+
+/**
+ * Second Thought's presence indicator: the last fold's harvested-unit count, or
+ * a bucketed glyph when the last turn skipped.
+ *
+ * Hidden whenever the feature is off, and hidden on a host that predates ticket
+ * 08's `getSecondThoughtStatus` — same optional-chaining convention the advisor
+ * badge uses, so lightweight session doubles skip the segment instead of
+ * crashing.
+ */
+const secondThoughtSegment: StatusLineSegment = {
+	id: "second_thought",
+	render(ctx) {
+		const session = ctx.session as SegmentContext["session"] & SecondThoughtStatusHost;
+		const view = session.getSecondThoughtStatus?.();
+		if (!view?.enabled) return { content: "", visible: false };
+
+		// A harvest is the interesting state, so it wins when a turn both skipped
+		// earlier and harvested later.
+		const units = view.lastFold?.unitCount ?? 0;
+		if (units > 0) {
+			const content = withIcon(theme.icon.branch, formatNumber(units));
+			return { content: theme.fg("statusLineSubagents", content), visible: true };
+		}
+
+		if (view.lastSkip) {
+			const display = SECOND_THOUGHT_SKIP_DISPLAY[view.lastSkip.bucket];
+			const glyph = theme.symbol(display.glyph);
+			return { content: theme.fg(display.color, withIcon(theme.icon.branch, glyph)), visible: true };
+		}
+
+		// Enabled, nothing forked yet: no news is not a status.
+		return { content: "", visible: false };
+	},
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Segment Registry
 // ═══════════════════════════════════════════════════════════════════════════
@@ -711,6 +765,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	session_name: sessionNameSegment,
 	usage: usageSegment,
 	collab: collabSegment,
+	second_thought: secondThoughtSegment,
 };
 
 export function renderSegment(id: StatusLineSegmentId, ctx: SegmentContext): RenderedSegment {
