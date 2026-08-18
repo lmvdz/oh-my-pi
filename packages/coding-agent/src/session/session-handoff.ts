@@ -78,6 +78,19 @@ export interface SessionHandoffHost {
 	resetTodoCycle(): void;
 	buildDisplaySessionContext(): SessionContext;
 	resetAdvisorSessionState(): void;
+	/**
+	 * Drop Second Thought's fork and pending fold, and move its history epoch.
+	 *
+	 * A handoff is a conversation boundary: `replaceMessages` swaps the whole
+	 * transcript for the rebuilt one, and a fold harvested against the pre-handoff
+	 * conversation describes messages that no longer exist. The wrapped
+	 * `replaceMessages` bumps the epoch on its own, which is enough to make a
+	 * pending fold undeliverable — this call additionally cancels a live fork and
+	 * retires the fold eagerly, next to the advisor reset, so the two
+	 * session-scoped runtimes are torn down on the same line rather than one of
+	 * them relying on a side effect.
+	 */
+	resetSecondThought(): void;
 	drainAndDetachAdvisorRecorders(): Promise<void>;
 	reattachAdvisorRecorderFeeds(): void;
 	clearAdvisorCost(): void;
@@ -340,6 +353,7 @@ export class SessionHandoff {
 			const sessionContext = this.#host.buildDisplaySessionContext();
 			this.#host.agent.replaceMessages(sessionContext.messages);
 			this.#host.resetAdvisorSessionState();
+			this.#host.resetSecondThought();
 			advisorRecordersDetached = false;
 			this.#host.syncTodoPhasesFromBranch();
 			if (this.#host.extensionRunner) {
@@ -359,8 +373,10 @@ export class SessionHandoff {
 			throw error;
 		} finally {
 			if (advisorRecordersDetached) {
-				if (sessionTransitioned) this.#host.resetAdvisorSessionState();
-				else this.#host.reattachAdvisorRecorderFeeds();
+				if (sessionTransitioned) {
+					this.#host.resetAdvisorSessionState();
+					this.#host.resetSecondThought();
+				} else this.#host.reattachAdvisorRecorderFeeds();
 			}
 			sourceSignal?.removeEventListener("abort", onSourceAbort);
 			this.#handoffAbortController = undefined;

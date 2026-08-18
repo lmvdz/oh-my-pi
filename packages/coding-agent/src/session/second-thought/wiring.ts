@@ -21,6 +21,36 @@
  * | session switch / branch / tree nav | {@link SecondThoughtRuntime.reset} | coordinator + fold reset |
  * | `agent.replaceMessages` (wrapped) | {@link SecondThoughtRuntime.bumpHistoryEpoch} | staleness guard |
  *
+ * ## The construction gate is sampled ONCE, and why
+ *
+ * `AgentSession` builds this runtime only when `secondThought.enabled` is true
+ * at construction time, and the whole table above is unwired when it is false.
+ * That is not an optimisation — it is the only way the disabled path can be
+ * byte-for-byte identical to a session that never heard of the feature.
+ *
+ * The reason is `addBeforeModelCall`. `agent-loop.ts` treats the mere PRESENCE
+ * of a `beforeModelCall` as a signal:
+ *
+ * ```ts
+ * if (config.beforeModelCall && signal?.aborted) gateResult = { stop: true };
+ * ```
+ *
+ * Second Thought's hook is the repo's only registration of it. Registering it
+ * unconditionally therefore arms that aborted-gate branch for EVERY main
+ * session — including every session with the feature off — and changes how many
+ * provider calls an abort-at-the-gate makes (one instead of two, deterministic).
+ * A feature that is off must cost nothing and change nothing, so the gate is
+ * sampled at construction and the hook is simply never installed when it is off.
+ *
+ * The consequence, stated so nobody has to rediscover it: **toggling
+ * `secondThought.enabled` takes effect at the start of the NEXT session, not
+ * immediately.** Flipping it on mid-session leaves `AgentSession#secondThought`
+ * `undefined` until a new session is constructed. `settings-schema.ts` says so
+ * in the setting's own description, and `docs/second-thought.md` repeats it.
+ * The per-fork `gating.ts` check still runs on top of this, so turning the
+ * setting OFF mid-session does stop forking immediately; only turning it ON
+ * waits.
+ *
  * ## Provider-call identity, and where arming actually happens
  *
  * The coordinator's arming contract (see its module header) wants one arm per
@@ -84,6 +114,28 @@
  * construction rather than by reconstruction: 02 deep-copies that context and
  * appends one user turn, so the encoded prefix is byte-identical to the main
  * call's (the acceptance gate asserts this end to end).
+ *
+ * ## The fold crosses the secret boundary TWICE
+ *
+ * The captured fork context is already obfuscated — `transformProviderContext`
+ * ran `obfuscateProviderContext` before `addBeforeModelCall` sees it — so a
+ * secret that appeared in a tool result reaches the branch as a PLACEHOLDER.
+ * The branch may quote that placeholder back in its `<reflect>` text, and
+ * `branch-call` deobfuscates harvested text (so the session, the transcript,
+ * and ST-07's surface see plaintext like every other assistant-authored
+ * string).
+ *
+ * Injection then happens AFTER obfuscation, which is exactly the window where
+ * that plaintext would ride to the provider unredacted. {@link
+ * SecondThoughtRuntime.onProviderCall} therefore re-obfuscates the injected
+ * fold message before handing the context on. Obfuscation is deterministic and
+ * placeholder-idempotent, so the replay path (same request key → byte-identical
+ * output) is unaffected, and `FOLD_BLOCK_OPEN` is not secret-shaped, so the
+ * already-present idempotence marker survives the pass.
+ *
+ * The fold store itself keeps the PLAINTEXT block: the diagnostic entry and the
+ * ST-07 seam are local surfaces, and redacting them would make the feature's
+ * own audit trail unreadable. Only the wire copy is redacted.
  */
 
 import type { Agent, StreamFn } from "@oh-my-pi/pi-agent-core";
@@ -100,6 +152,7 @@ import {
 } from "./coordinator";
 import {
 	type FoldRetireReason,
+	isFoldMessage,
 	type SecondThoughtFoldEntry,
 	type SecondThoughtFoldHost,
 	SecondThoughtFoldStore,
@@ -133,6 +186,16 @@ export interface SecondThoughtWiringDeps {
 	prepareStreamOptions(options: SimpleStreamOptions, provider?: string): SimpleStreamOptions;
 	/** Inverse of the session's secret obfuscation, applied to harvested branch text. */
 	deobfuscateText?(text: string): string;
+	/**
+	 * Forward secret obfuscation (`providerBoundary.obfuscateText`).
+	 *
+	 * Applied to the injected fold block ONLY. Everything else in the request was
+	 * already obfuscated by `transformProviderContext`; the fold is appended after
+	 * that hook ran and carries deobfuscated branch text, so without this the
+	 * branch's placeholder echo would reach the provider as plaintext. See the
+	 * module doc's "crosses the secret boundary TWICE".
+	 */
+	obfuscateText?(text: string): string | undefined;
 	/** Estimated context tokens; `undefined` disables the context-size breaker. */
 	estimateContextTokens?(): number | undefined;
 	/** Non-context diagnostic entry sink (`sessionManager.appendCustomEntry`). */
@@ -231,7 +294,9 @@ export class SecondThoughtRuntime {
 				// The captured fork context is already obfuscated: it is the exact
 				// object the main call sends, taken after `transformProviderContext`
 				// ran `obfuscateProviderContext`. Obfuscating again would double-encode
-				// placeholders, so only the inverse is wired.
+				// placeholders, so only the inverse is wired HERE — the return leg
+				// (harvest → fold → wire) is re-obfuscated at injection instead, in
+				// `#redactFoldTail`.
 				deobfuscateText: deps.deobfuscateText ? text => deps.deobfuscateText?.(text) ?? text : undefined,
 				now: deps.now,
 				nextSideCallId: deps.nextSideCallId,
@@ -277,7 +342,8 @@ export class SecondThoughtRuntime {
 	 * Does four things, in this order:
 	 * 1. moves the provider-call sequence and ARMS the coordinator,
 	 * 2. captures the run abort signal so a fork chains to it,
-	 * 3. injects the pending fold as the LAST message on the wire,
+	 * 3. injects the pending fold as the LAST message on the wire, re-obfuscated
+	 *    so a deobfuscated harvest cannot reintroduce a plaintext secret,
 	 * 4. records the resulting context as the fork snapshot source.
 	 *
 	 * Arming here rather than from the `message_start` event is an ORDERING
@@ -301,7 +367,7 @@ export class SecondThoughtRuntime {
 			this.#runSignal = signal;
 			const requestKey = this.#providerCallSeq;
 			const messages = this.folds.applyToRequest<Message>(context.messages, requestKey);
-			if (messages !== context.messages) context.messages = messages as Message[];
+			if (messages !== context.messages) context.messages = this.#redactFoldTail(messages as Message[]);
 			this.#forkContext = context;
 		} catch (error) {
 			logger.debug("Second Thought provider-call hook failed", { error });
@@ -355,6 +421,11 @@ export class SecondThoughtRuntime {
 	/** Run end: retire an undelivered fold. v1 never carries it across a prompt. */
 	onRunEnd(): void {
 		this.folds.onRunEnd();
+		// A captured provider context pins the whole conversation snapshot (every
+		// message, every image payload) for as long as the session lives. Nothing
+		// may fork between runs — the trigger only fires inside a stream — so
+		// holding it past `agent_end` buys nothing and costs the retention.
+		this.#forkContext = undefined;
 	}
 
 	/** Terminal teardown. Safe to call more than once. */
@@ -370,6 +441,41 @@ export class SecondThoughtRuntime {
 	/** Test seam: wait for detached finalizers. */
 	whenSettled(): Promise<void> {
 		return this.coordinator.whenSettled();
+	}
+
+	/**
+	 * Re-obfuscate the just-injected fold message, in place, on the request copy.
+	 *
+	 * `applyToRequest` returns a FRESH array when it injected (and the same array
+	 * reference when it did not, which the caller already filtered out), and
+	 * `buildFoldMessage` builds a fresh message object, so replacing the tail here
+	 * mutates nothing the fold store still owns — its `#pending.block` and its
+	 * `#replay.block` stay plaintext for the diagnostic entry and the ST-07 seam.
+	 *
+	 * Idempotence holds two ways: the obfuscator is deterministic (a replayed
+	 * request produces byte-identical text), and it leaves already-minted
+	 * placeholders alone (so a second pass over the same string is a no-op).
+	 */
+	#redactFoldTail(messages: Message[]): Message[] {
+		const obfuscate = this.#deps.obfuscateText;
+		if (!obfuscate) return messages;
+		const index = messages.length - 1;
+		const tail = messages[index];
+		if (!tail || !isFoldMessage(tail)) return messages;
+		const { content } = tail as { content: unknown };
+		if (!Array.isArray(content)) return messages;
+		let changed = false;
+		const redacted = content.map(block => {
+			if ((block as { type?: unknown })?.type !== "text") return block;
+			const text = (block as { text: string }).text;
+			const next = obfuscate(text) ?? text;
+			if (next === text) return block;
+			changed = true;
+			return { ...(block as object), text: next };
+		});
+		if (!changed) return messages;
+		messages[index] = { ...(tail as object), content: redacted } as Message;
+		return messages;
 	}
 
 	#prepareFork(model: Model<Api>): SecondThoughtForkContext | undefined {
@@ -413,6 +519,14 @@ export class SecondThoughtRuntime {
  * `name`, `description`, the schema, `strict`, and `native`, and `normalizeTools`
  * has already folded `examples` into `description`. So the branch's tool set is
  * wire-identical to the main call's, which is what the cache prefix depends on.
+ *
+ * NOTE — the `examples`-are-already-folded claim is scoped to the Anthropic
+ * Messages v1 encoder, which is the only API Second Thought's gate permits
+ * (`gating.ts` requires `api === "anthropic-messages"` for BOTH the primary and
+ * the branch model). If the gate is ever widened, re-check this reduction
+ * against the new encoder before trusting prefix parity: an encoder that reads
+ * a field dropped here would silently split the cache namespace rather than
+ * fail, which is the expensive failure mode.
  */
 function toWireTool(tool: Tool): Tool {
 	return {

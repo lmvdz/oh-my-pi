@@ -14,7 +14,13 @@
  * - a branch call leaves the primary session's stats and provider-header ingest
  *   completely untouched;
  * - every abort-shaped exit tears the branch down and delivers no fold;
- * - with no settings, the feature produces zero behavioural delta.
+ * - with the feature off, the session is INDISTINGUISHABLE from one that never
+ *   had the feature — including at the pre-model abort gate, whose behaviour
+ *   changes if a `beforeModelCall` is merely registered;
+ * - a branch's provider-session state can never mutate the primary's;
+ * - a secret the branch saw as a placeholder reaches the wire as a placeholder,
+ *   even though the harvest is deobfuscated in between;
+ * - the harvest completes before the advisors' catch-up, with advisors live.
  *
  * The provider is scripted at the `streamFn` boundary, so every request the
  * session makes — main calls and branch calls alike — is recorded with its full
@@ -38,6 +44,8 @@ import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream"
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { obfuscateProviderContext } from "@oh-my-pi/pi-coding-agent/secrets/message-transform";
+import { SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets/obfuscator";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -47,6 +55,7 @@ import {
 	FOLD_BLOCK_OPEN,
 	SECOND_THOUGHT_FOLD_CUSTOM_TYPE,
 } from "@oh-my-pi/pi-coding-agent/session/second-thought/fold";
+import { SessionAdvisors } from "@oh-my-pi/pi-coding-agent/session/session-advisors";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -313,18 +322,27 @@ function abortedError(model: Model): { reason: "aborted"; error: never } {
 // Session harness
 // ---------------------------------------------------------------------------
 
+/** Mutable so a test can make the tool result carry a secret. */
+let probeOutput = "probe ok";
+/** Mutable hook run INSIDE tool execution, i.e. between two provider calls. */
+let probeDuringExecute: (() => Promise<void>) | undefined;
+
 const PROBE_TOOL: AgentTool = {
 	name: "probe",
 	label: "Probe",
 	description: "Test tool that always succeeds",
 	parameters: type({}),
-	execute: async () => ({ content: [{ type: "text" as const, text: "probe ok" }] }),
+	execute: async () => {
+		await probeDuringExecute?.();
+		return { content: [{ type: "text" as const, text: probeOutput }] };
+	},
 };
 
 interface Harness {
 	readonly session: AgentSession;
 	readonly script: Script;
 	readonly settings: Settings;
+	readonly obfuscator: SecretObfuscator | undefined;
 }
 
 let tempDir: TempDir;
@@ -337,6 +355,13 @@ async function createHarness(args: {
 	/** Omit the settings-aware side stream fn, as a bare host would. */
 	withoutSideStreamFn?: boolean;
 	agentKind?: "main" | "sub";
+	/**
+	 * Install the session's secret boundary AND the SDK's outbound redaction on
+	 * the agent (`sdk.ts`'s `transformProviderContext` runs
+	 * `obfuscateProviderContext` first). Both halves are required: without the
+	 * transform there is no boundary for the fold to cross.
+	 */
+	obfuscator?: SecretObfuscator;
 }): Promise<Harness> {
 	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 	if (!model) throw new Error("Expected the bundled anthropic model to exist");
@@ -355,11 +380,18 @@ async function createHarness(args: {
 	authStorage.setRuntimeApiKey("anthropic", "test-key");
 	const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 
+	const obfuscator = args.obfuscator;
+
 	const agent = new Agent({
 		getApiKey: () => "test-key",
 		initialState: { model, systemPrompt: ["You are pi."], tools: [PROBE_TOOL], messages: [] },
 		convertToLlm,
 		streamFn: script.streamFn,
+		// Mirrors sdk.ts:3146 — the outbound redaction runs inside
+		// `transformProviderContext`, i.e. BEFORE `addBeforeModelCall`.
+		...(obfuscator
+			? { transformProviderContext: (context: Context) => obfuscateProviderContext(obfuscator, context) }
+			: {}),
 	});
 
 	const session = new AgentSession({
@@ -369,10 +401,11 @@ async function createHarness(args: {
 		modelRegistry,
 		agentKind: args.agentKind,
 		toolRegistry: new Map<string, AgentTool>([[PROBE_TOOL.name, PROBE_TOOL]]),
+		...(obfuscator ? { obfuscator } : {}),
 		...(args.withoutSideStreamFn ? {} : { sideStreamFn: script.streamFn }),
 	});
 	openSessions.push(session);
-	return { session, script, settings };
+	return { session, script, settings, obfuscator };
 }
 
 /** The wire encoding of a request's messages, through the real Anthropic converter. */
@@ -386,6 +419,8 @@ function foldMessages(context: Context): Message[] {
 
 beforeEach(() => {
 	tempDir = TempDir.createSync("second-thought-integration");
+	probeOutput = "probe ok";
+	probeDuringExecute = undefined;
 });
 
 afterEach(async () => {
@@ -561,7 +596,342 @@ describe("Second Thought end to end", () => {
 				.getBranch()
 				.filter(entry => entry.type === "custom" && entry.customType === SECOND_THOUGHT_FOLD_CUSTOM_TYPE),
 		).toHaveLength(0);
-		expect(session.secondThought?.report().forks).toBe(0);
+		// Disabled at construction means the runtime is never built at all — not
+		// built-but-idle. See the abort-shape delta test below for why that
+		// distinction is the whole point.
+		expect(session.secondThought).toBeUndefined();
+	});
+
+	it("DISABLED-PATH DELTA: an abort at the pre-model gate makes the same provider calls with the feature off as with no feature at all", async () => {
+		// `agent-loop.ts` reads the mere PRESENCE of a `beforeModelCall` as an
+		// aborted-gate signal:
+		//
+		//     if (config.beforeModelCall && signal?.aborted) gateResult = { stop: true };
+		//
+		// Second Thought owns the repo's only registration of it. Registering it in
+		// a session whose feature is OFF therefore changes that session's abort
+		// shape — deterministically, on every main session in the product — purely
+		// by existing. This asserts the two sessions are indistinguishable.
+		//
+		// The abort lands DURING tool execution, so the loop finishes the tool,
+		// re-enters with `hasMoreToolCalls`, and reaches `prepareProviderCall` with
+		// an already-aborted signal. That is the exact window the hook's presence
+		// changes: measured here as 2 provider calls without the hook and 1 with it.
+		const run = async (settings: Record<string, unknown>, withoutSideStreamFn: boolean) => {
+			let sessionRef: AgentSession | undefined;
+			const harness = await createHarness({
+				script: {
+					turns: [
+						{ thinking: THINKING, toolCall: { name: "probe", args: {} } },
+						{ text: "done" },
+						{ text: "done again" },
+					],
+					branchText: REFLECT_TEXT,
+				},
+				settings,
+				withoutSideStreamFn,
+			});
+			sessionRef = harness.session;
+			probeDuringExecute = async () => {
+				void sessionRef?.abort({ reason: "test-interrupt" });
+				await Bun.sleep(10);
+			};
+			await harness.session.prompt("fix the failing test").catch(() => undefined);
+			await harness.session.secondThought?.whenSettled();
+			return harness.script.mainCalls().length;
+		};
+
+		// Control: a host that never supplied a side stream fn, so the feature
+		// cannot exist here under any setting.
+		const control = await run({ "secondThought.enabled": true }, true);
+		// The case under test: the feature is available but switched off.
+		const disabled = await run({ "secondThought.enabled": false }, false);
+		// Positive control: with the feature ON the hook IS installed, and this
+		// scenario does change shape. That is what makes the assertion above a real
+		// assertion rather than a vacuous one — the scenario discriminates.
+		const enabled = await run({ "secondThought.enabled": true }, false);
+
+		expect(disabled).toBe(control);
+		expect(enabled).not.toBe(control);
+	});
+
+	it("PROVIDER SESSION STATE: a branch mutation can never reach the primary's map", async () => {
+		// The map is a degradation ledger providers WRITE to (strict-tools off,
+		// reasoning-effort fallback, fast-mode). A branch 400 flipping any of those
+		// for the primary call is a speculative side call degrading the main loop.
+		const { session, script } = await createHarness({
+			script: {
+				turns: [
+					{ thinking: THINKING, toolCall: { name: "probe", args: {} } },
+					{ thinking: THINKING, toolCall: { name: "probe", args: { second: true } } },
+					{ text: "done" },
+				],
+				branchText: REFLECT_TEXT,
+			},
+		});
+
+		await session.prompt("run two tools");
+
+		const branchCalls = script.branchCalls();
+		expect(branchCalls).toHaveLength(2);
+		const primaryState = session.providerSessionState;
+
+		for (const call of branchCalls) {
+			const branchState = call.options?.providerSessionState;
+			expect(branchState).toBeDefined();
+			// Not the primary's object, by identity.
+			expect(branchState).not.toBe(primaryState);
+		}
+		// Two forks, two independent maps.
+		expect(branchCalls[0]!.options?.providerSessionState).not.toBe(branchCalls[1]!.options?.providerSessionState);
+
+		// The mutation a provider error path performs (`disableStrictToolsForScope`
+		// and friends all `.set(...)` on this map) is observed on the branch's
+		// object and is invisible to the primary's.
+		const closed: string[] = [];
+		branchCalls[0]!.options?.providerSessionState?.set("strict-tools:anthropic", {
+			close: () => closed.push("branch"),
+		});
+		expect(primaryState.size).toBe(0);
+		expect(primaryState.has("strict-tools:anthropic")).toBe(false);
+
+		// And the primary's own map is still the object the agent was handed, so
+		// nothing here isolated the primary from ITSELF.
+		expect(session.agent.providerSessionState).toBe(primaryState);
+	});
+
+	it("SECRET ROUND TRIP: a placeholder echoed by the branch reaches the wire as a PLACEHOLDER, not plaintext", async () => {
+		// The full loop the security finding describes:
+		//   tool output holds a plaintext secret
+		//     → `transformProviderContext` obfuscates the main context
+		//     → the branch is forked from that context, so it sees a PLACEHOLDER
+		//     → the branch quotes the placeholder back in its <reflect> text
+		//     → `branch-call` DEOBFUSCATES the harvest, so the fold holds plaintext
+		//     → the fold is injected AFTER obfuscation ran
+		// Without re-obfuscation at injection, that last step puts the plaintext
+		// secret on the wire.
+		const SECRET = "sk-live-second-thought-canary-7fd2";
+		probeOutput = `the api key is ${SECRET} and it works`;
+
+		const obfuscator = new SecretObfuscator([{ type: "plain", content: SECRET }]);
+		const placeholder = obfuscator.obfuscate(SECRET);
+		expect(placeholder).not.toBe(SECRET);
+		expect(placeholder).not.toContain(SECRET);
+		// The branch quotes back the placeholder it was shown. It cannot quote the
+		// plaintext, because it was never shown the plaintext — which is exactly why
+		// a deobfuscated harvest reintroducing it is a leak and not a round trip.
+		const branchEcho =
+			`<reflect type="check">The probe returned ${placeholder} so the credential path is live.</reflect>\n` +
+			'<reflect type="alternative">Reading the helper first would confirm the double read.</reflect>';
+
+		// The fork fires on the FIRST tool call of a stream, so the tool RESULT
+		// carrying the secret only exists from the second provider call onward.
+		// Turn 2 is therefore the turn whose fork can see it.
+		const { session, script } = await createHarness({
+			script: {
+				turns: [
+					{ thinking: THINKING, toolCall: { name: "probe", args: {} } },
+					{ thinking: THINKING, toolCall: { name: "probe", args: { second: true } } },
+					{ text: "done" },
+				],
+				branchText: branchEcho,
+			},
+			obfuscator,
+		});
+
+		await session.prompt("fix the failing test");
+
+		const branchCalls = script.branchCalls();
+		expect(branchCalls).toHaveLength(2);
+		// (a) The branch was forked from the OBFUSCATED context: it saw the
+		// placeholder and never the plaintext secret.
+		const secretAwareBranch = branchCalls[1]!;
+		expect(secretAwareBranch.messagesJson).toContain(placeholder);
+		expect(secretAwareBranch.messagesJson).not.toContain(SECRET);
+
+		// (b) The harvest from that branch reached the next main call, and the fold
+		// carries the PLACEHOLDER on the wire — not the plaintext the deobfuscated
+		// harvest actually holds in memory.
+		const delivery = script.mainCalls()[2]!;
+		const fold = delivery.context.messages.at(-1)!;
+		expect(textOf(fold)).toContain(FOLD_BLOCK_OPEN);
+		expect(textOf(fold)).toContain(placeholder);
+		expect(textOf(fold)).not.toContain(SECRET);
+		// The whole request, not just its tail: nothing anywhere reintroduced it.
+		expect(delivery.messagesJson).not.toContain(SECRET);
+		for (const call of script.calls) expect(call.messagesJson).not.toContain(SECRET);
+
+		// (c) The LOCAL audit trail is deliberately plaintext: redacting the
+		// diagnostic entry would make the feature's own record unreadable, and a
+		// `custom` entry is structurally incapable of reaching a provider.
+		const entries = session.sessionManager
+			.getBranch()
+			.filter(item => item.type === "custom" && item.customType === SECOND_THOUGHT_FOLD_CUSTOM_TYPE);
+		expect(entries.length).toBeGreaterThan(0);
+		expect(entries.some(item => JSON.stringify((item as { data?: unknown }).data).includes(SECRET))).toBe(true);
+	});
+
+	it("resets on a model change, so a fork taken against the old request shape cannot be delivered", async () => {
+		const { session, script } = await createHarness({
+			script: {
+				turns: [{ thinking: THINKING, toolCall: { name: "probe", args: {} } }, { text: "done" }, { text: "fresh" }],
+				branchText: REFLECT_TEXT,
+			},
+			settings: { "secondThought.deliveryCalls": 4 },
+		});
+		const runtime = session.secondThought!;
+
+		await session.prompt("fix the failing test");
+		const epochBefore = runtime.historyEpoch;
+
+		const other = getBundledModel("anthropic", "claude-haiku-4-5") ?? getBundledModel("anthropic", "claude-opus-4-1");
+		expect(other).toBeDefined();
+		await session.setModel(other!);
+
+		// The model switch invalidated the branch's whole cache identity, so both
+		// the fork and any fold harvested from it are dropped.
+		expect(runtime.historyEpoch).toBeGreaterThan(epochBefore);
+		expect(runtime.hasPendingFold).toBe(false);
+
+		const callsBefore = script.mainCalls().length;
+		await session.prompt("and now?");
+		for (const call of script.mainCalls().slice(callsBefore)) {
+			expect(foldMessages(call.context)).toHaveLength(0);
+		}
+	});
+
+	it("resets on tree navigation (branch to an earlier entry)", async () => {
+		const { session, script } = await createHarness({
+			script: {
+				turns: [{ thinking: THINKING, toolCall: { name: "probe", args: {} } }, { text: "done" }, { text: "fresh" }],
+				branchText: REFLECT_TEXT,
+			},
+			settings: { "secondThought.deliveryCalls": 4 },
+		});
+		const runtime = session.secondThought!;
+
+		await session.prompt("fix the failing test");
+		const epochBefore = runtime.historyEpoch;
+
+		const target = session.sessionManager.getBranch().find(entry => entry.type === "message");
+		expect(target).toBeDefined();
+		await session.branch((target as { id: string }).id);
+
+		expect(runtime.historyEpoch).toBeGreaterThan(epochBefore);
+		expect(runtime.hasPendingFold).toBe(false);
+
+		const callsBefore = script.mainCalls().length;
+		await session.prompt("different path");
+		for (const call of script.mainCalls().slice(callsBefore)) {
+			expect(foldMessages(call.context)).toHaveLength(0);
+		}
+	});
+
+	it("carries no fold across a handoff", async () => {
+		// A handoff replaces the entire transcript the reflections describe, so no
+		// fold may survive it. `session-handoff.ts` calls `resetSecondThought()`
+		// next to `resetAdvisorSessionState()`.
+		//
+		// Stated plainly, because a reader deserves to know how much this test
+		// proves: the handoff's own `agent.replaceMessages` already moves the epoch
+		// through the wrapped method, so this OUTCOME holds with the explicit reset
+		// removed. The explicit call is there so the rule is written down at the
+		// boundary instead of emerging from a side effect two modules away, and so
+		// that a fork still in flight (a handoff racing a run) is cancelled rather
+		// than merely made undeliverable. What this test guards is the outcome —
+		// it fails if either mechanism is removed AND the other is not there to
+		// cover it.
+		const { session, script } = await createHarness({
+			script: {
+				turns: [
+					{ thinking: THINKING, toolCall: { name: "probe", args: {} } },
+					{ text: "done" },
+					// The handoff generation call is answered with the document.
+					{ text: "# Handoff\n\nPick up from the failing test." },
+					{ text: "fresh" },
+				],
+				branchText: REFLECT_TEXT,
+			},
+			settings: { "secondThought.deliveryCalls": 4 },
+		});
+		const runtime = session.secondThought!;
+
+		await session.prompt("fix the failing test");
+		const epochBefore = runtime.historyEpoch;
+
+		const result = await session.handoff();
+		expect(result?.document).toContain("Handoff");
+
+		expect(runtime.historyEpoch).toBeGreaterThan(epochBefore);
+		expect(runtime.hasPendingFold).toBe(false);
+		expect(runtime.coordinator.activeBranchCount).toBe(0);
+
+		const callsBefore = script.mainCalls().length;
+		await session.prompt("continue");
+		for (const call of script.mainCalls().slice(callsBefore)) {
+			expect(foldMessages(call.context)).toHaveLength(0);
+		}
+	});
+
+	it("HARVEST BEFORE ADVISORS: the ≤300 ms harvest completes ahead of a slow advisor catch-up", async () => {
+		// The ordering constraint the wiring exists to satisfy: `onTurnEnd` runs
+		// Second Thought's harvest BEFORE `#advisors.onPrimaryTurnEnd`, whose
+		// `waitForCatchup` can block for tens of seconds. The rest of the suite
+		// runs with advisors disabled, so a swap of the two lines survives it —
+		// this test does not.
+		const order: string[] = [];
+		const { session, script } = await createHarness({
+			script: {
+				turns: [{ thinking: THINKING, toolCall: { name: "probe", args: {} } }, { text: "done" }],
+				branchText: REFLECT_TEXT,
+			},
+			settings: { "advisor.enabled": true },
+		});
+
+		const runtime = session.secondThought!;
+		// Observe the harvest on the runtime instance the session holds.
+		const originalHarvest = runtime.onPrimaryTurnEnd.bind(runtime);
+		(runtime as unknown as { onPrimaryTurnEnd: () => Promise<void> }).onPrimaryTurnEnd = async () => {
+			order.push("harvest:start");
+			await originalHarvest();
+			order.push("harvest:end");
+		};
+
+		// Stand a SLOW advisor catch-up exactly where the real backlog wait stands.
+		// Patched on the prototype because the session's `#advisors` is private —
+		// this is the same method object `agent-session.ts`'s turn-end closure
+		// calls, so the ordering observed here is the production ordering.
+		const originalAdvisors = SessionAdvisors.prototype.onPrimaryTurnEnd;
+		SessionAdvisors.prototype.onPrimaryTurnEnd = async function patched(
+			this: SessionAdvisors,
+			...args: Parameters<SessionAdvisors["onPrimaryTurnEnd"]>
+		) {
+			order.push("advisors:start");
+			await Bun.sleep(250);
+			try {
+				return await originalAdvisors.apply(this, args);
+			} finally {
+				order.push("advisors:end");
+			}
+		} as SessionAdvisors["onPrimaryTurnEnd"];
+
+		try {
+			await session.prompt("fix the failing test");
+		} finally {
+			SessionAdvisors.prototype.onPrimaryTurnEnd = originalAdvisors;
+		}
+
+		// Strictly interleaved, not merely both-present: the harvest is COMPLETE
+		// before the advisor wait even begins. Swapping the two lines in
+		// `agent-session.ts`'s `setOnTurnEnd` closure inverts this.
+		const first = order.indexOf("advisors:start");
+		expect(first).toBeGreaterThan(-1);
+		expect(order.slice(0, first)).toEqual(["harvest:start", "harvest:end"]);
+
+		// And the harvest was real work, not an early no-op: the branch ran and its
+		// fold reached the next provider call of the same run.
+		expect(script.branchCalls()).toHaveLength(1);
+		expect(foldMessages(script.mainCalls()[1]!.context)).toHaveLength(1);
 	});
 
 	it("never constructs the runtime for a sub-session or without a settings-aware stream fn", async () => {
@@ -614,6 +984,43 @@ describe("Second Thought end to end", () => {
 		}
 	});
 
+	it("spends `deliveryCalls: 2` across TWO provider calls of the same run", async () => {
+		// The setting is inert in a two-call run, because the fold is retired at
+		// `agent_end` before a second request ever exists. Turn 2 opens a tool call
+		// with NO thinking, so its conditioning is too short to fork — the fold
+		// from turn 1 survives an extra provider call instead of being superseded.
+		const { session, script } = await createHarness({
+			script: {
+				turns: [
+					{ thinking: THINKING, toolCall: { name: "probe", args: {} } },
+					{ toolCall: { name: "probe", args: { second: true } } },
+					{ text: "done" },
+				],
+				branchText: REFLECT_TEXT,
+			},
+			settings: { "secondThought.deliveryCalls": 2 },
+		});
+
+		await session.prompt("fix the failing test");
+
+		expect(script.branchCalls()).toHaveLength(1);
+		const main = script.mainCalls();
+		expect(main.length).toBeGreaterThanOrEqual(3);
+		// Call 1 predates the harvest; calls 2 and 3 each carry it, and it is the
+		// final message on both.
+		expect(foldMessages(main[0]!.context)).toHaveLength(0);
+		for (const call of [main[1]!, main[2]!]) {
+			expect(foldMessages(call.context)).toHaveLength(1);
+			expect(textOf(call.context.messages.at(-1))).toContain(FOLD_BLOCK_OPEN);
+		}
+		// Budget spent: nothing pending, and the entry records two deliveries.
+		expect(session.secondThought?.hasPendingFold).toBe(false);
+		const entry = session.sessionManager
+			.getBranch()
+			.find(item => item.type === "custom" && item.customType === SECOND_THOUGHT_FOLD_CUSTOM_TYPE);
+		expect((entry as { data?: { deliveryCount?: number } } | undefined)?.data?.deliveryCount).toBe(2);
+	});
+
 	it("drops the fold when history moves under it (rewind / compaction / replaceMessages)", async () => {
 		const { session, script } = await createHarness({
 			script: {
@@ -624,20 +1031,24 @@ describe("Second Thought end to end", () => {
 				],
 				branchText: REFLECT_TEXT,
 			},
-			// Two delivery calls, so the fold would otherwise survive into a later
-			// request and the epoch check is the only thing that can drop it.
 			settings: { "secondThought.deliveryCalls": 2 },
 		});
 
 		const runtime = session.secondThought!;
 		await session.prompt("fix the failing test");
 
-		// Simulate the history rewrite compaction/rewind performs. The wrapped
+		// Stated rather than assumed: the fold is ALREADY gone here, retired by
+		// `onRunEnd` when the run finished — v1 never carries a fold across a
+		// prompt, whatever `deliveryCalls` says. So `hasPendingFold` below proves
+		// nothing about the epoch on its own; the load-bearing claim is that the
+		// epoch MOVES and that the next run is clean.
+		expect(runtime.hasPendingFold).toBe(false);
+
+		// The history rewrite compaction/rewind performs. The wrapped
 		// `replaceMessages` is what moves the epoch, so this is the production path.
 		const epochBefore = runtime.historyEpoch;
 		session.agent.replaceMessages(session.agent.state.messages.slice(0, 1));
 		expect(runtime.historyEpoch).toBeGreaterThan(epochBefore);
-		expect(runtime.hasPendingFold).toBe(false);
 
 		const callsBefore = script.mainCalls().length;
 		await session.prompt("and now?");

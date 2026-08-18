@@ -39,22 +39,39 @@ is cancelled and discarded.
 
 ## Host wiring (`agent-session.ts`)
 
-The runtime is constructed only for `agentKind === "main"` **and** only when the host
-supplied a settings-aware `sideStreamFn` (the SDK does; `AgentSession`'s own fallback is
-bare `streamSimple`, which drops provider routing and in-flight caps). A subagent or a
-bare-constructed session therefore carries none of the feature.
+The runtime is constructed only for `agentKind === "main"`, only when the host supplied a
+settings-aware `sideStreamFn` (the SDK does; `AgentSession`'s own fallback is bare
+`streamSimple`, which drops provider routing and in-flight caps), **and only when
+`secondThought.enabled` is true at construction**. A subagent, a bare-constructed session,
+and a session that started with the feature off therefore carry none of the feature.
+
+That third condition is load-bearing. `agent-loop.ts` reads the mere presence of a
+`beforeModelCall` as an aborted-gate signal (`if (config.beforeModelCall &&
+signal?.aborted) gateResult = { stop: true }`), and Second Thought owns the repo's only
+registration of it — so installing the hook in a disabled session changes that session's
+abort shape (one provider call instead of two) purely by existing.
+
+**Consequence:** turning `secondThought.enabled` **on takes effect at the next session**.
+Turning it **off takes effect immediately**, because `gating.ts` re-reads the setting on
+every fork.
 
 | Site | Call |
 |---|---|
-| `agent.addBeforeModelCall` | `onProviderCall` — arms the stream, injects the pending fold as the final message, captures the fork context |
+| `agent.addBeforeModelCall` | `onProviderCall` — arms the stream, injects the pending fold as the final message (re-obfuscated), captures the fork context |
 | `setAssistantMessageEventInterceptor` | `onAssistantEvent` — fork trigger on the first `toolcall_start` |
 | `message_start` (assistant) | `noteStreamStart` — a no-op by construction; see below |
 | `setOnTurnEnd`, before the advisors | `onPrimaryTurnEnd` — abort + ≤300 ms harvest |
-| `agent_end` | `onRunEnd` — retire an undelivered fold |
-| `abort()` | `cancelActive("session-abort")` |
-| `beginDispose()` | `dispose()` |
-| session switch / branch / tree navigation / new session | `reset()` |
+| `agent_end` | `onRunEnd` — retire an undelivered fold, release the fork context |
+| `abort()` | `cancelActive("session-abort")` — defense in depth; the run-signal chain covers it |
+| `beginDispose()` | `dispose()` + hook teardown |
+| session switch / branch / tree navigation / new session / **handoff** / **model change** | `reset()` |
 | `agent.replaceMessages` (wrapped) | `bumpHistoryEpoch()` |
+
+**Model change and handoff** both reset. A fork is taken against one exact request shape
+(system prompt, tools, thinking config, cache prefix); a model switch invalidates all of
+it, and a handoff replaces the transcript the reflections describe. `reset()` sits next to
+`resetAdvisorSessionState()` in `session-handoff.ts` and inside the `isChanging` branch of
+`#setModelWithProviderSessionReset`, which every `ModelControls` path funnels through.
 
 **Stream identity** is the provider-CALL sequence, not the message object. `agent-loop`
 reassigns `event.partial` on every event, the Harmony truncate-resume path re-pushes
@@ -76,6 +93,32 @@ be permanently spent on a request it was never meant for.
 exactly the case this guards; and there are 25+ `replaceMessages` call sites across
 prewalk, maintenance, turn-recovery, TTSR, and handoff, so wrapping the one method they
 all pass through is the only enforceable form of the rule.
+
+## Secrets
+
+The fold crosses the secret boundary twice. The captured fork context is already
+obfuscated (`transformProviderContext` ran `obfuscateProviderContext` before
+`addBeforeModelCall` sees it), so a secret that appeared in a tool result reaches the
+branch as a **placeholder**. `branch-call` deobfuscates harvested text, like every other
+model-authored string, so the fold block held in memory — and the diagnostic entry, and
+ST-07's surface — carry plaintext.
+
+Injection happens **after** obfuscation. `wiring.ts#redactFoldTail` therefore
+re-obfuscates the injected fold message before it reaches the wire; without it a branch
+that quotes a placeholder back would hand the provider the plaintext secret on the next
+main call. Obfuscation is deterministic and placeholder-idempotent, so replay stays
+byte-identical, and `FOLD_BLOCK_OPEN` is not secret-shaped, so the already-present
+idempotence marker survives. Only the wire copy is redacted; the local audit trail stays
+readable.
+
+## Provider session state
+
+A branch never shares the primary's `providerSessionState` map. That map is a per-session
+degradation ledger providers **write** to — a 400 on the branch would disable strict
+tools, drop the recorded reasoning-effort fallback, or flip fast-mode / unsigned-thinking
+for the *primary* call. Each fork gets its own throwaway map, so a speculative side call
+can never degrade the main loop. No cache identity lives there (`promptCacheKey` carries
+that separately), and the branch never resumes, so nothing is lost.
 
 ## Accounting
 
