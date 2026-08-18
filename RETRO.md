@@ -81,3 +81,21 @@ file:line claims against its checkout and reports contradictions** (ticket-decay
   skip cannot freeze its own EMA input; reset() clears EMAs (they describe one
   conversation+model pairing).
 - Routed onward: stream-token arming contract + discarded-message_end hazard → #10.
+### ST-04 ephemeral fold (#6) — closed 2026-08-17
+- 1 build round (opus) + 1 fix round (codex sol) + 2 gauntlet rounds (opus blind ×2) +
+  orchestrator hygiene pass.
+- r1's security catch is the reason blind critics execute payloads instead of reading
+  code: a reflect-unit body could close the observation wrapper and forge a
+  <system-reminder> OUTSIDE it — structural inertness was a doc claim, not a property.
+  Fixed in BOTH layers (parser rejection list + fold boundary re-cap), verified
+  independently (fold layer alone neutralizes with the parser layer reverted).
+- r1 also caught the replay path bypassing the epoch re-check (re-injecting retired
+  folds into post-rewind history) and the whole-array idempotency scan letting a user
+  paste of the literal marker suppress delivery forever.
+- r2: PASS, 8/8 mutation probes caught; three LOW hygiene residuals closed by
+  orchestrator edits (buildFoldBlock boundary guard, ceiling pin, refusal counters),
+  each verified against the receipt list item-by-item.
+- Routed onward: fold must be the LAST transform in request assembly (extension context
+  + steering wraps run after transformContext) → #10.
+- Process lesson: "the wrapper says observations-not-instructions" protects nothing;
+  only delimiter hygiene at every public boundary does.
