@@ -113,3 +113,19 @@ file:line claims against its checkout and reports contradictions** (ticket-decay
   summary bullets instead of the receipt checklist. Standing rule from that slip: land a
   fix round only after verifying the diff against the receipt's numbered list.
 - r3: all residuals implemented and test-pinned; PASS.
+### ST-07 TUI surface (#9) — closed 2026-08-17
+- 1 build round (opus) + 1 fix round (codex terra) + 2 gauntlet rounds (opus blind ×2) +
+  orchestrator one-liners.
+- The build's contradiction hunt was ship-saving: the ticket targeted FooterComponent,
+  which is dead code — the live surface is StatusLineComponent. A ticket written from an
+  older mental model would have shipped an invisible feature.
+- r1's render-reality brief caught what unit tests structurally cannot: the card broke
+  the TUI's physical-row contract at ≤150 columns (only unit lines were clamped), and
+  model-authored unit text reached the TTY with VT/OSC escapes intact (ESC[2J, OSC-title,
+  BEL) — terminal-escape injection from branch output, with the sibling surface's own
+  sanitizer sitting unused. Both invisible to the 296-test suite.
+- r2: PASS, all probes lethal; residual one-line boundary-guard hole + two cosmetic gaps
+  closed by orchestrator edits verified against the receipt list.
+- Process lesson: for TUI work, "render the real component at real widths with hostile
+  payloads" belongs in the FIRST critic brief; assertions on string output only prove
+  what the fixture shape allows.
