@@ -30,3 +30,16 @@ file:line claims against its checkout and reports contradictions** (ticket-decay
   expect-count mismatch (21 vs 22) on the merged tree. Rule: land on a checked-out branch,
   or push the sha explicitly; always re-verify the merged tree's test counts against the
   lane's.
+### ST-01 parser + prompts (#3) — closed 2026-08-17
+- 1 build round (codex sol) + 1 fix round (codex terra) + 2 gauntlet rounds (opus blind →
+  codex terra verify).
+- r1 was the strongest critic round of the campaign so far: PASS on semantics via a
+  3,000-case randomized differential against the vendored Python (0 divergences), but a
+  21-mutant probe found 4 semantics-changing mutants the 28-test suite missed — worst was
+  silent text loss after a repaired closer (763/3000 divergences, invisible to every test).
+- r2 verified: all 4 mutants now caught, nested-tag bypass variants rejected, prompts
+  byte-verbatim, 37 tests green.
+- Refuted: none. Routed onward: atom-type filtering through ATOM_NAMES → ticket 03/#5.
+- Process lesson: "tests pass + reference-faithful" and "tests would catch a regression"
+  are different properties — the mutation probe is what separates them; keep it in every
+  parser-ish gauntlet prompt.
