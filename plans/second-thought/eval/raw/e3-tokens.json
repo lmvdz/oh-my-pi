@@ -1,0 +1,84 @@
+{
+	"model": {
+		"id": "claude-sonnet-4-5",
+		"provider": "anthropic",
+		"api": "anthropic-messages",
+		"costPerMTok": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 3.75
+		}
+	},
+	"tokenizer": "@oh-my-pi/pi-natives countTokens (exact)",
+	"branchRequest": {
+		"combinedBranchPromptTokens": 117,
+		"appendedMessagesOverMainPrefix": 1,
+		"appendedTokensIncludingConditioning": 188,
+		"branchMaxTokensDefault": 2048
+	},
+	"fold": {
+		"deliveredFoldTokens": 155,
+		"deliveredFoldBytes": 714,
+		"unitsInFold": 2,
+		"scaling": [
+			{
+				"units": 1,
+				"foldTokens": 126,
+				"foldBytes": 584
+			},
+			{
+				"units": 2,
+				"foldTokens": 155,
+				"foldBytes": 702
+			},
+			{
+				"units": 4,
+				"foldTokens": 213,
+				"foldBytes": 938
+			},
+			{
+				"units": 8,
+				"foldTokens": 329,
+				"foldBytes": 1410
+			},
+			{
+				"units": 16,
+				"foldTokens": 561,
+				"foldBytes": 2361
+			}
+		]
+	},
+	"marginalSpendPerFork": [
+		{
+			"prefixTokens": 10000,
+			"warmPrefixUsd": 0.003,
+			"coldPrefixUsd": 0.03,
+			"appendedUsd": 0.000564,
+			"outputUsdAtCap": 0.03072,
+			"totalWarmUsd": 0.034284,
+			"totalColdUsd": 0.061284,
+			"warmToColdRatio": 10
+		},
+		{
+			"prefixTokens": 30000,
+			"warmPrefixUsd": 0.009,
+			"coldPrefixUsd": 0.09,
+			"appendedUsd": 0.000564,
+			"outputUsdAtCap": 0.03072,
+			"totalWarmUsd": 0.040284,
+			"totalColdUsd": 0.121284,
+			"warmToColdRatio": 10
+		},
+		{
+			"prefixTokens": 100000,
+			"warmPrefixUsd": 0.03,
+			"coldPrefixUsd": 0.3,
+			"appendedUsd": 0.000564,
+			"outputUsdAtCap": 0.03072,
+			"totalWarmUsd": 0.061284,
+			"totalColdUsd": 0.331284,
+			"warmToColdRatio": 10
+		}
+	]
+}
