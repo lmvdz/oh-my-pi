@@ -129,3 +129,29 @@ file:line claims against its checkout and reports contradictions** (ticket-decay
 - Process lesson: for TUI work, "render the real component at real widths with hostile
   payloads" belongs in the FIRST critic brief; assertions on string output only prove
   what the fixture shape allows.
+### ST-08 integration (#10) — closed 2026-08-18
+- 1 build round + 1 fix round (both opus) + 3 gauntlet rounds (r1 grok+opus-execution,
+  r2 codex-fresh+grok, r3 codex focused) + 2 orchestrator fixes with lethal probes.
+- The build itself found a production-killer: normalizeTools puts execute functions into
+  Context.tools → structuredClone throws → every fork would have skipped
+  snapshot-failed. Golden fixtures with hand-built tools cannot see this class; only
+  wiring against the real Agent did.
+- r1's execution critic measured a disabled-path regression: registering the repo's
+  first-ever beforeModelCall armed a dead agent-loop branch and changed abort behavior
+  with the feature OFF (2→1 provider calls, deterministic). The zero-delta claim now has
+  a delta test with a positive control. grok found the fold re-obfuscation hole
+  (deobfuscated harvest re-introducing plaintext secrets) and the shared
+  providerSessionState flag leak.
+- r2 accepted both addBeforeModelCall deviations; codex's fresh look found the
+  skip-restore branch gap; r3's focused verify found its deeper form — the
+  sessionTransitioned flag was set AFTER a throwing-capable cosmetic step, so a
+  committed boundary crossing could go unrecorded. Fixed by marking the transition at
+  the mutation commit.
+- Orchestrator near-miss for the record: my first planted-fold test was vacuous (passed
+  under mutation — onRunEnd already retires natural folds) and my probe-revert wiped the
+  source fix via `git checkout --`. Both caught by the mandatory-probe discipline.
+  Rules: probe every fix including your own; never revert probes with git checkout when
+  the tree carries unlanded edits — use a file backup.
+- Deviations recorded: arming + fold injection via addBeforeModelCall (adjudicated by
+  both lineages against the loop's real ordering); reopen if agent-loop's hook
+  semantics change.
