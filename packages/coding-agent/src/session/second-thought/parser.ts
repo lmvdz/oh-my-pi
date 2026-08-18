@@ -6,7 +6,7 @@ const REFLECT_UNIT_RE = /<reflect(?:\s+[^>]*)?>(.*?)<\/reflect>/gs;
 const REFLECT_TYPED_RE = /<reflect\s+type="([^"]+)">(.*?)<\/reflect>/gs;
 const ANY_CLOSER_RE = /<\/[^<>\n]{1,40}>/g;
 const NESTED_CONTROL_TAG_RE =
-	/<\/?(?:reflect|think(?:ing)?|tool(?:_call|_use)?|function(?:_call)?|assistant|user|system|developer)(?:\s[^<>]*)?>/i;
+	/<\/?(?:reflect|think(?:ing)?|tool(?:_call|_use)?|function(?:_call)?|assistant|user|system|developer)(?=[\s/>"'=])[^<>]*>/i;
 
 /** Maximum UTF-8 size of one harvested reflect body. */
 export const MAX_REFLECT_UNIT_BYTES = 4 * 1024;
@@ -120,7 +120,8 @@ export function truncateAtLastCompleteReflect(text: string): string {
 /**
  * Round-robin merge per-atom bodies into complete typed reflect units.
  * Unsafe or oversized units are omitted. A unit that would exceed the fold
- * limit is skipped, so the result is always complete markup within the cap.
+ * limit is skipped and later units are still considered, so the result is
+ * always complete markup within the cap.
  */
 export function interleaveTypedUnitsByAtom(
 	unitsPerAtom: Readonly<Record<string, readonly string[]>>,

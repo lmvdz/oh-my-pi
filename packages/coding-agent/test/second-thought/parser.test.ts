@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { ATOM_NAMES, ATOM_PROMPTS } from "../../src/session/second-thought/atoms";
 import {
 	countReflectUnits,
 	interleaveTypedUnitsByAtom,
@@ -32,6 +33,10 @@ describe("reflect-unit helpers", () => {
 		const text = "<reflect> predict: a. </reflect>\n<reflect>expect: b.</reflect>";
 
 		expect(reflectUnits(text)).toEqual(["predict: a.", "expect: b."]);
+	});
+
+	it("parses an untyped unit whose body spans lines", () => {
+		expect(reflectUnits("<reflect>first line\nsecond line</reflect>")).toEqual(["first line\nsecond line"]);
 	});
 
 	it("parses only complete typed units", () => {
@@ -76,6 +81,20 @@ describe("reflect-unit helpers", () => {
 	it("returns an empty fold for empty streams", () => {
 		expect(interleaveTypedUnitsByAtom({}, ["check", "recall"])).toBe("");
 	});
+
+	it("trims unit bodies during interleaving", () => {
+		expect(interleaveTypedUnitsByAtom({ check: [" pad "] }, ["check"])).toBe('<reflect type="check">pad</reflect>');
+	});
+});
+
+describe("atom prompts", () => {
+	it("preserves each atom's reflect format and final instruction without trailing whitespace", () => {
+		for (const atom of ATOM_NAMES) {
+			const prompt = ATOM_PROMPTS[atom];
+			expect(prompt).toContain(`<reflect type="${atom}">`);
+			expect(prompt).toEndWith(`Begin emitting ${atom} units now.`);
+		}
+	});
 });
 
 describe("malformed reflect closer repair", () => {
@@ -94,6 +113,16 @@ describe("malformed reflect closer repair", () => {
 			["check", "a"],
 			["recall", "b"],
 		]);
+	});
+
+	it("keeps text between a repaired closer and the next opener", () => {
+		const text = "<reflect>a</refresh> kept <reflect>b</reflect>";
+
+		expect(normalizeReflectClosers(text)).toBe("<reflect>a</reflect> kept <reflect>b</reflect>");
+	});
+
+	it("counts repaired untyped units", () => {
+		expect(countReflectUnits("<reflect>a</refresh><reflect>b</reflect>")).toBe(2);
 	});
 
 	it("repairs the DeepSeek DSML special-token closer", () => {
@@ -135,6 +164,12 @@ describe("malformed reflect closer repair", () => {
 		expect(countReflectUnits(text)).toBe(1);
 	});
 
+	it("does not promote a foreign closer longer than the repair limit", () => {
+		const text = `<reflect>a</${"x".repeat(45)}>`;
+
+		expect(normalizeReflectClosers(text)).toBe(text);
+	});
+
 	it.each(["</refresh>", "</reflection>", "</ref lect>", "</｜｜DSML｜｜>"])(
 		"repairs the measured malformed closer %s",
 		closer => {
@@ -163,6 +198,12 @@ describe("provider leakage and defensive limits", () => {
 			'<reflect type="recall">safe</reflect>';
 
 		expect(parseReflectTypedUnits(text)).toEqual([["recall", "safe"]]);
+	});
+
+	it.each(["<thinking/>", '<thinking">'])("rejects a unit containing the %s thinking-tag bypass", tag => {
+		const text = `<reflect type="check">hidden ${tag}</reflect>`;
+
+		expect(parseReflectTypedUnits(text)).toEqual([]);
 	});
 
 	it("rejects a unit containing a nested tool control tag", () => {
@@ -199,5 +240,14 @@ describe("provider leakage and defensive limits", () => {
 
 		expect(output).toBe(first);
 		expect(Buffer.byteLength(output)).toBeLessThanOrEqual(Buffer.byteLength(first));
+	});
+
+	it("admits a later unit after an earlier one exceeds the fold cap", () => {
+		const admitted = '<reflect type="check">ok</reflect>';
+		const output = interleaveTypedUnitsByAtom({ check: ["too large for this fold", "ok"] }, ["check"], {
+			maxFoldBytes: Buffer.byteLength(admitted),
+		});
+
+		expect(output).toBe(admitted);
 	});
 });

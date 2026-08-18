@@ -21,10 +21,10 @@ export const ATOM_NAMES = [
 export const REFLECT_ATOMS = ATOM_NAMES;
 
 export const ATOM_PROMPTS = {
-	[ReflectAtom.Check]: checkPrompt,
-	[ReflectAtom.Rehearse]: rehearsePrompt,
-	[ReflectAtom.Recall]: recallPrompt,
-	[ReflectAtom.Alternative]: alternativePrompt,
+	[ReflectAtom.Check]: checkPrompt.trim(),
+	[ReflectAtom.Rehearse]: rehearsePrompt.trim(),
+	[ReflectAtom.Recall]: recallPrompt.trim(),
+	[ReflectAtom.Alternative]: alternativePrompt.trim(),
 } as const satisfies Readonly<Record<ReflectAtom, string>>;
 
-export const COMBINED_BRANCH_PROMPT = combinedBranchPrompt;
+export const COMBINED_BRANCH_PROMPT = combinedBranchPrompt.trim();
