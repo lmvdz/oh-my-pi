@@ -128,11 +128,32 @@ describe("mux seat + decide", () => {
 		}
 	});
 
-	it("returns 503 when every capable seat is closed", () => {
+	it("overflows to cheap when every capable seat is closed", () => {
 		const reports = policy.capableOrder.map(target =>
 			report(target.provider, [limit({ id: `${target.provider}:7d`, windowId: "7d", usedFraction: 0.99, provider: target.provider })]),
 		);
 		const decision = decideMuxLane("capable", reports, policy);
+		expect(decision.ok).toBe(true);
+		if (decision.ok) {
+			expect(decision.reason).toBe("capable-overflow");
+			expect(decision.target).toEqual(policy.cheap);
+		}
+	});
+
+	it("returns 503 when capable closed and cheap credits exhausted", () => {
+		const closedSeats = policy.capableOrder.map(target =>
+			report(target.provider, [limit({ id: `${target.provider}:7d`, windowId: "7d", usedFraction: 0.99, provider: target.provider })]),
+		);
+		const noCredits = report("openrouter", [
+			{
+				id: "openrouter:credits",
+				label: "OpenRouter credits",
+				scope: { provider: "openrouter", windowId: "credits" },
+				amount: { remaining: 0, used: 10, limit: 10, usedFraction: 1, unit: "usd" },
+				status: "exhausted",
+			},
+		]);
+		const decision = decideMuxLane("capable", [...closedSeats, noCredits], policy);
 		expect(decision.ok).toBe(false);
 		if (!decision.ok) expect(decision.reason).toBe("all-capable-seats-closed");
 	});
@@ -276,6 +297,11 @@ describe("auth-gateway mux wire", () => {
 			id: "opus",
 			handler: () => ({ content: ["should-not-run"] }),
 		});
+		const flash = createMockModel({
+			provider: "mock",
+			id: "flash",
+			handler: () => ({ content: ["overflow-served"] }),
+		});
 		const mux = new MuxRuntime({
 			weeklyCloseAt: 0.7,
 			fiveHourCloseAt: 0.6,
@@ -287,7 +313,7 @@ describe("auth-gateway mux wire", () => {
 			bearerTokens: ["t"],
 			storage,
 			mux,
-			resolveModel: () => opus.model,
+			resolveModel: id => (id === "mock/flash" || id === "flash" ? flash.model : opus.model),
 			version: "test",
 		});
 		try {
@@ -300,7 +326,13 @@ describe("auth-gateway mux wire", () => {
 					stream: false,
 				}),
 			});
-			expect(res.status).toBe(503);
+			// Capable seats closed → overflow serves cheap (flash) with a 200
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as { model?: string };
+			expect(body.model).toBe("mock/flash");
+			expect(res.headers.get("x-omp-mux-lane")).toBe("capable");
+			expect(res.headers.get("x-omp-mux-target")).toBe("mock/flash");
+			expect(res.headers.get("x-omp-mux-reason")).toBe("capable-overflow");
 			expect(opus.calls).toHaveLength(0);
 		} finally {
 			await handle.close();

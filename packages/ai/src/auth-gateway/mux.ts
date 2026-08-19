@@ -236,6 +236,14 @@ export function decideMuxLane(
 	const openUnknown = seats.find(seat => seat.open && seat.reason === "unknown");
 	const picked = openKnown ?? openUnknown;
 	if (!picked) {
+		// No capable seat open — overflow to the cheap target instead of failing.
+		// This breaks the stage_router escalate→503→fallback loop: Switchyard
+		// escalates to mux/capable on each hard task with no memory that capable
+		// just failed, so a hard 503 makes it re-escalate every turn. Serving cheap
+		// here lets the request complete and records the overflow in the reason.
+		if (cheapCreditSnapshot(reports, policy).open) {
+			return { ok: true, lane, target: policy.cheap, sticky: false, reason: "capable-overflow" };
+		}
 		return { ok: false, lane, reason: "all-capable-seats-closed", seats };
 	}
 	return {
@@ -259,8 +267,13 @@ export class MuxRuntime {
 	resolve(lane: MuxLane, reports: UsageReport[], sessionKey?: string): MuxDecision {
 		const sticky = lane === "capable" && sessionKey ? this.#sticky.get(sessionKey) : undefined;
 		const decision = decideMuxLane(lane, reports, this.policy, sticky);
-		if (decision.ok && lane === "capable" && sessionKey) {
+		if (decision.ok && lane === "capable" && sessionKey && decision.reason !== "capable-overflow") {
 			this.#sticky.set(sessionKey, decision.target);
+		}
+		// Overflow served cheap under the "capable" lane — don't let that become a
+		// sticky capable-pin once a real capable seat opens.
+		if (decision.reason === "capable-overflow" && sessionKey) {
+			this.#sticky.delete(sessionKey);
 		}
 		if (!decision.ok && sessionKey) {
 			this.#sticky.delete(sessionKey);
