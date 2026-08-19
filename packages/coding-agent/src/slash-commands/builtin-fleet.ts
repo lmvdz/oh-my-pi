@@ -82,7 +82,7 @@ export const BUILTIN_FLEET_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			if (tokens[0] === "restart") {
 				await runtime.output("Restarting quota-router stack...");
 				try {
-					const { ensureQuotaRouter, parseQuotaRouterSettings, stackHealth } = await import("../quota-router/ensure");
+					const { parseQuotaRouterSettings } = await import("../quota-router/ensure");
 					const settings = runtime.settings;
 					const qr = parseQuotaRouterSettings({
 						enabled: true,
@@ -117,23 +117,11 @@ export const BUILTIN_FLEET_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 						await Bun.sleep(500);
 					}
 					await runtime.output(up ? "Stack restarted." : "Timed out waiting for stack to come up.");
-					return commandConsumed();
-							const decisions = getRecentRoutingDecisions(10);
-							const pTotal = decisions.reduce((s: number, d: any) => s + (d.sy_prompt_tokens ?? 0), 0);
-							const cTotal = decisions.reduce((s: number, d: any) => s + (d.sy_cached_tokens ?? 0), 0);
-							const oTotal = decisions.reduce((s: number, d: any) => s + (d.sy_completion_tokens ?? 0), 0);
-							const cheap = decisions.filter((d: any) => d.mux_lane === "cheap" || d.sy_model?.includes("cheap")).length;
-							const capable = decisions.filter((d: any) => d.mux_lane === "capable" || d.sy_model?.includes("capable")).length;
-							const tok = pTotal > 0 ? ` · ${formatTokens(pTotal)} in +${formatTokens(cTotal)} cache + ${formatTokens(oTotal)} out` : "";
-							await runtime.output(`[${new Date().toLocaleTimeString()}] cheap ${cheap} / capable ${capable} · ${decisions.length} recent${tok}`);
-						} catch {}
-						await Bun.sleep(intervalSec * 1000);
-					}
-				};
-				poll();
-				return { consumed: true };
+				} catch (err) {
+					await runtime.output(`Error: ${err instanceof Error ? err.message : String(err)}`);
+				}
+				return commandConsumed();
 			}
-
 			// --- status (default) ---
 			let routingLog: string | undefined;
 			let limit = 10;
