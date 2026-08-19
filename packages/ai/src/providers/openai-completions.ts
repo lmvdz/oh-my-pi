@@ -1305,8 +1305,18 @@ const streamOpenAICompletionsOnce = (
 			// sweep. Throwing after that sweep would make the error handler emit a
 			// second text_end/thinking_end for the same partial block.
 			if (streamFinishedAt === undefined && output.content.length > 0) {
+				// Quota-router mux/switchyard routes can truncate when every capable
+				// seat is exhausted and all traffic spills to the cheap lane. Surface
+				// that instead of a bare "stream closed" so the root cause is visible.
+				const isMuxRoute =
+					model.provider === "mux" ||
+					model.id.startsWith("mux/") ||
+					model.provider === "switchyard";
+				const hint = isMuxRoute
+					? " (quota-router: no capable seat may be open, forcing traffic to the cheap lane which can truncate; run `/fleet status` to see seat state)"
+					: "";
 				throw new AIError.ProviderResponseError(
-					"OpenAI completions stream closed before a finish_reason was received",
+					`OpenAI completions stream closed before a finish_reason was received${hint}`,
 					{ provider: model.provider, kind: "incomplete-stream" },
 				);
 			}
