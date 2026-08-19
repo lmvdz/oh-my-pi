@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- `omp fleet status` command showing recent Switchyard routing decisions and live mux seat state
+- `MuxDecisionEntry` session entry type recording mux lane/target/reason per request
+- Mux decisions written to session file on successful gateway response via `SessionManager.appendMuxDecision()`
+- `omp fleet status` CLI command with token/cache columns
+- `/fleet status` and `/fleet watch` slash commands
+- Mux decision written to session files (onResponse fallback when headers unavailable)
+- `x_omp_mux` response body field from gateway for cheap/capable routing
+- `x-switchyard-session-id` header for Switchyard routing log correlation
+- `quotaRouter` settings UI in /settings → Providers → Quota Router
+
+### Fixed
+
+- Session file scanner now recurses into subdirectories
+- Cache session mtime to avoid rescanning unchanged dirs
+- Missing commandConsumed import in fleet slash command
+
 ## [17.3.7] - 2026-08-17
 
 ### Changed

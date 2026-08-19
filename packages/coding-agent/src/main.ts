@@ -1327,6 +1327,28 @@ export async function runRootCommand(
 	// Initialize discovery system with settings for provider persistence
 	logger.time("initializeWithSettings", initializeWithSettings, settingsInstance);
 
+	if (settingsInstance.get("quotaRouter.enabled")) {
+		const { ensureQuotaRouter, parseQuotaRouterSettings } = await import("./quota-router/ensure");
+		const qr = parseQuotaRouterSettings({
+			enabled: settingsInstance.get("quotaRouter.enabled"),
+			broker: settingsInstance.get("quotaRouter.broker"),
+			gateway: settingsInstance.get("quotaRouter.gateway"),
+			switchyard: settingsInstance.get("quotaRouter.switchyard"),
+			root: settingsInstance.get("quotaRouter.root"),
+			gatewayBind: settingsInstance.get("quotaRouter.gatewayBind"),
+			switchyardBind: settingsInstance.get("quotaRouter.switchyardBind"),
+			brokerUrl: settingsInstance.get("quotaRouter.brokerUrl"),
+			muxCheap: settingsInstance.get("quotaRouter.muxCheap"),
+			muxCapable: settingsInstance.get("quotaRouter.muxCapable"),
+		});
+		const ensured = await logger.time("quotaRouter:ensure", () => ensureQuotaRouter(qr));
+		if (ensured.ok) {
+			writeStartupNotice(parsedArgs, `quota-router ${ensured.detail}\n`);
+		} else {
+			writeStartupNotice(parsedArgs, `${chalk.yellow(`quota-router: ${ensured.detail}`)}\n`);
+		}
+	}
+
 	// Apply model role overrides from CLI args or env vars (ephemeral, not persisted)
 	const smolModel = parsedArgs.smol ?? $env.PI_SMOL_MODEL;
 	const slowModel = parsedArgs.slow ?? $env.PI_SLOW_MODEL;

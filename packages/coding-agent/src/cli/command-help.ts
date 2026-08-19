@@ -43,6 +43,8 @@ export const configHelp = { description: "Manage configuration settings" } satis
 export const dryBalanceHelp = {
 	description: "Dry-run OAuth account balancing across random session ids",
 } satisfies CommandMetadata;
+export const fleetHelp = { description: "Show fleet routing status" } satisfies CommandMetadata;
+
 
 export const galleryHelp = {
 	description: "Preview tool renderers across streaming, in-progress, success, and failure states",

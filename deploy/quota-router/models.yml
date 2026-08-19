@@ -1,0 +1,36 @@
+# Example only — bind addresses here must match the running gateway/switchyard.
+# Prefer the snippet from render-config.sh (it fills baseUrl from --mux-url /
+# --gateway-bind / --switchyard-bind).
+#
+# smol/task never go through Switchyard so a classifier cannot "save" them
+# onto Max. advisor stays Grok so the third lineage is not a coin flip.
+
+providers:
+  mux:
+    baseUrl: http://127.0.0.1:4010/v1
+    api: openai-completions
+    apiKey: OMP_AUTH_GATEWAY_TOKEN
+    authHeader: true
+    models:
+      - id: cheap
+        name: Quota mux (cheap / Flash)
+        contextWindow: 1000000
+        maxTokens: 32000
+      - id: capable
+        name: Quota mux (capable / sub seat)
+        contextWindow: 1000000
+        maxTokens: 128000
+  switchyard:
+    baseUrl: http://127.0.0.1:4001/v1
+    api: openai-completions
+    apiKey: OMP_AUTH_GATEWAY_TOKEN
+    authHeader: true
+    models:
+      - id: fleet
+        name: Switchyard fleet (cheap-first)
+        contextWindow: 1000000
+        maxTokens: 32000
+      - id: ship
+        name: Switchyard ship (escalate)
+        contextWindow: 1000000
+        maxTokens: 128000

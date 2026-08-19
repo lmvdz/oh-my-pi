@@ -42,6 +42,16 @@ import {
 	resolvePeer,
 	withCors,
 } from "./http";
+import {
+	catalogIdsFor,
+	loadMuxPolicyFromEnv,
+	MuxRuntime,
+	muxTargetKey,
+	parseMuxLane,
+	type MuxDecision,
+	cheapCreditSnapshot,
+	seatStatus,
+} from "./mux";
 import type {
 	AuthGatewayServerHandle,
 	AuthGatewayServerOptions,
@@ -65,6 +75,11 @@ export interface AuthGatewayBootOptions extends AuthGatewayServerOptions {
 	resolveModel: ModelResolver;
 	/** Optional supplier for `/v1/models` listing. Returns the full model array. */
 	listModels?: () => Iterable<Model<Api>>;
+	/**
+	 * Quota mux (`mux/cheap`, `mux/capable`). Default: env-loaded policy.
+	 * Pass `null` to disable virtual model ids.
+	 */
+	mux?: MuxRuntime | null;
 }
 
 // `parseBind` lives in ../utils/parse-bind so the gateway and broker can't
@@ -124,6 +139,123 @@ function deriveSessionId(modelId: string, context: Context): string {
 	// The 36-char UUID flows through unchanged:
 	// `normalizeOpenAIPromptCacheKey` accepts ≤64 chars verbatim.
 	return deterministicUuid(seed);
+}
+
+interface ResolvedGatewayModel {
+	model: Model<Api>;
+	mux?: MuxDecision & { ok: true };
+}
+
+async function resolveGatewayModel(
+	bootOpts: AuthGatewayBootOptions,
+	requestedId: string,
+	sessionKey: string,
+	signal: AbortSignal,
+	formatError: (status: number, type: string, message: string) => Response,
+): Promise<ResolvedGatewayModel | Response> {
+	const mux = bootOpts.mux;
+	const lane = mux ? parseMuxLane(requestedId) : undefined;
+	if (!lane || !mux) {
+		const model = bootOpts.resolveModel(requestedId);
+		if (!model) return formatError(404, "invalid_request_error", `Unknown model: ${requestedId}`);
+		return { model };
+	}
+
+	const reports = (await bootOpts.storage.fetchUsageReports?.({ signal })) ?? [];
+	const decision = mux.resolve(lane, reports, sessionKey);
+	if (!decision.ok) {
+		const seats = decision.seats
+			.map(seat => `${muxTargetKey(seat.target)}:${seat.reason ?? (seat.open ? "open" : "closed")}`)
+			.join(",");
+		const hint =
+			decision.reason === "cheap-credits-exhausted"
+				? "Add OpenRouter credits, then retry."
+				: "Spill to OpenRouter Flash or wait for a reset.";
+		return formatError(
+			503,
+			"usage_limit_reached",
+			`mux/${lane} has no open seat (${decision.reason}${seats ? `; ${seats}` : ""}). ${hint}`,
+		);
+	}
+
+	let model: Model<Api> | undefined;
+	for (const id of catalogIdsFor(decision.target)) {
+		model = bootOpts.resolveModel(id);
+		if (model) break;
+	}
+	if (!model) {
+		return formatError(
+			404,
+			"invalid_request_error",
+			`mux resolved ${muxTargetKey(decision.target)} but the catalog has no matching model`,
+		);
+	}
+	logger.info("auth-gateway mux pick", {
+		lane,
+		target: muxTargetKey(decision.target),
+		reason: decision.reason,
+		sticky: decision.sticky,
+	});
+	return { model, mux: decision };
+}
+
+function muxResponseHeaders(mux: (MuxDecision & { ok: true }) | undefined): Record<string, string> {
+	if (!mux) return {};
+	return {
+		"x-omp-mux-lane": mux.lane,
+		"x-omp-mux-target": muxTargetKey(mux.target),
+		"x-omp-mux-reason": mux.reason,
+	};
+}
+
+function muxResponseBody(mux: (MuxDecision & { ok: true }) | undefined): Record<string, unknown> {
+	if (!mux) return {};
+	return {
+		x_omp_mux: {
+			lane: mux.lane,
+			target: muxTargetKey(mux.target),
+			reason: mux.reason,
+		},
+	};
+}
+
+function injectMuxSseResponse(
+	stream: ReadableStream<Uint8Array>,
+	mux: (MuxDecision & { ok: true }) | undefined,
+): ReadableStream<Uint8Array> {
+	if (!mux) return stream;
+	const decoder = new TextDecoder();
+	const encoder = new TextEncoder();
+	const body = muxResponseBody(mux);
+	let remainder = "";
+	return stream.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				remainder += decoder.decode(chunk, { stream: true });
+				const lines = remainder.split(/\r?\n/u);
+				remainder = lines.pop() ?? "";
+				for (const line of lines) {
+					const data = line.startsWith("data: ") ? line.slice(6) : undefined;
+					if (data === undefined || data === "[DONE]") {
+						controller.enqueue(encoder.encode(`${line}\n`));
+						continue;
+					}
+					try {
+						const parsed: unknown = JSON.parse(data);
+						if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+							controller.enqueue(encoder.encode(`data: ${JSON.stringify({ ...parsed, ...body })}\n`));
+							continue;
+						}
+					} catch {}
+					controller.enqueue(encoder.encode(`${line}\n`));
+				}
+			},
+			flush(controller) {
+				remainder += decoder.decode();
+				if (remainder) controller.enqueue(encoder.encode(remainder));
+			},
+		}),
+	);
 }
 
 function buildStreamOptions(parsed: ParsedFormatRequest, api: Api, signal: AbortSignal): SimpleStreamOptions {
@@ -374,11 +506,6 @@ async function handleFormatEndpoint(
 		return route.module.formatError(400, "invalid_request_error", "Missing top-level `model` field");
 	}
 
-	const model = bootOpts.resolveModel(modelId);
-	if (!model) {
-		return route.module.formatError(404, "invalid_request_error", `Unknown model: ${modelId}`);
-	}
-
 	// Parse the wire-format request BEFORE resolving the credential so we
 	// have a stable per-conversation `sessionId` to thread into AuthStorage.
 	// Sticky-credential tracking and `markUsageLimitReached` both key off
@@ -409,6 +536,18 @@ async function handleFormatEndpoint(
 	// streamOpts.sessionId / promptCacheKey by `buildStreamOptions`.
 	const sessionId = parsed.options.promptCacheKey ?? deriveSessionId(parsed.modelId, parsed.context);
 	parsed.options.promptCacheKey ??= sessionId;
+
+	const resolved = await resolveGatewayModel(
+		bootOpts,
+		modelId,
+		sessionId,
+		controller.signal,
+		(status, type, message) => route.module.formatError(status, type, message),
+	);
+	if (resolved instanceof Response) return resolved;
+	const { model, mux } = resolved;
+	const responseMux = route.label === "openai-chat" || route.label === "openai-responses" ? mux : undefined;
+	parsed.modelId = `${model.provider}/${model.id}`;
 
 	// pi-ai's stream() does NOT consult AuthStorage — the caller (us) is
 	// expected to resolve the credential and pass it as `options.apiKey`.
@@ -476,11 +615,10 @@ async function handleFormatEndpoint(
 				const classified = classifyGatewayError(errorMessage);
 				return route.module.formatError(classified.status, classified.type, errorMessage);
 			}
-			return json(
-				200,
-				route.module.encodeResponse(message, parsed.modelId),
-				gatewayResponseHeaders(model, { requestId, message, startedAt }),
-			);
+			return json(200, { ...route.module.encodeResponse(message, parsed.modelId), ...muxResponseBody(responseMux) }, {
+				...gatewayResponseHeaders(model, { requestId, message, startedAt }),
+				...muxResponseHeaders(mux),
+			});
 		} catch (error) {
 			if (controller.signal.aborted) return clientClosedResponse(route);
 			const classified = classifyGatewayError(error);
@@ -504,18 +642,22 @@ async function handleFormatEndpoint(
 	}
 	if (controller.signal.aborted) return clientClosedResponse(route);
 
-	const sseStream = route.module.encodeStream(events, parsed.modelId, parsed.options, {
-		signal: controller.signal,
-		onCancel: reason => {
-			if (!controller.signal.aborted) {
-				controller.abort(reason instanceof Error ? reason : new Error("client closed request"));
-			}
-		},
-	});
+	const sseStream = injectMuxSseResponse(
+		route.module.encodeStream(events, parsed.modelId, parsed.options, {
+			signal: controller.signal,
+			onCancel: reason => {
+				if (!controller.signal.aborted) {
+					controller.abort(reason instanceof Error ? reason : new Error("client closed request"));
+				}
+			},
+		}),
+		responseMux,
+	);
 	return new Response(sseStream, {
 		status: 200,
 		headers: {
 			...gatewayResponseHeaders(model, { requestId }),
+			...muxResponseHeaders(mux),
 			"Content-Type": "text/event-stream; charset=utf-8",
 			"Cache-Control": "no-cache",
 			Connection: "keep-alive",
@@ -566,10 +708,6 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 		return piNative.formatError(400, "invalid_request_error", message);
 	}
 
-	const model = bootOpts.resolveModel(parsed.modelId);
-	if (!model) {
-		return piNative.formatError(404, "invalid_request_error", `Unknown model: ${parsed.modelId}`);
-	}
 	// Pi-native already parsed `streamOpts.sessionId` (when set by the
 	// client); fall back to the derived key so credential-stickiness lines
 	// up with cache-prefix stickiness — same identity used for both means
@@ -577,6 +715,17 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	// it hits a usage cap, then markUsageLimitReached can hand off.
 	const sessionId = parsed.options.sessionId ?? deriveSessionId(parsed.modelId, parsed.context);
 	parsed.options.sessionId ??= sessionId;
+
+	const resolved = await resolveGatewayModel(
+		bootOpts,
+		parsed.modelId,
+		sessionId,
+		controller.signal,
+		(status, type, message) => piNative.formatError(status, type, message),
+	);
+	if (resolved instanceof Response) return resolved;
+	const { model, mux } = resolved;
+	parsed.modelId = `${model.provider}/${model.id}`;
 
 	let apiKey: string | undefined;
 	try {
@@ -659,7 +808,10 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 				const classified = classifyGatewayError(errorMessage);
 				return piNative.formatError(classified.status, classified.type, errorMessage);
 			}
-			return json(200, { message }, gatewayResponseHeaders(model, { requestId, message, startedAt }));
+			return json(200, { message }, {
+				...gatewayResponseHeaders(model, { requestId, message, startedAt }),
+				...muxResponseHeaders(mux),
+			});
 		} catch (error) {
 			if (controller.signal.aborted) return aborted();
 			const classified = classifyGatewayError(error);
@@ -691,6 +843,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 		status: 200,
 		headers: {
 			...gatewayResponseHeaders(model, { requestId }),
+			...muxResponseHeaders(mux),
 			"Content-Type": "text/event-stream; charset=utf-8",
 			"Cache-Control": "no-cache",
 			Connection: "keep-alive",
@@ -751,6 +904,8 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 	const bind = parseBind(opts.bind ?? DEFAULT_AUTH_GATEWAY_BIND);
 	const tokens = new Set<string>(opts.bearerTokens);
 	const version = opts.version;
+	const mux = opts.mux === null ? undefined : (opts.mux ?? new MuxRuntime(loadMuxPolicyFromEnv()));
+	const bootOpts: AuthGatewayBootOptions = { ...opts, mux };
 
 	const server = Bun.serve({
 		hostname: bind.hostname,
@@ -781,6 +936,23 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 					return withCors(await handleUsage(opts.storage, req.signal), req);
 				}
 
+				if (req.method === "GET" && pathname === "/v1/mux") {
+					if (!mux) {
+						return withCors(json(404, { error: "mux disabled" }), req);
+					}
+					const reports = (await opts.storage.fetchUsageReports?.({ signal: req.signal })) ?? [];
+					return withCors(
+						json(200, {
+							policy: mux.policy,
+							stickySessions: mux.stickySessions,
+							aliases: ["mux/cheap", "mux/capable"],
+							cheap: cheapCreditSnapshot(reports, mux.policy),
+							capable: mux.policy.capableOrder.map(target => seatStatus(target, reports, mux.policy)),
+						}),
+						req,
+					);
+				}
+
 				// Per-credential auth probe — diagnoses which row in a multi-account
 				// pool is producing 401s. Aggregated `/v1/usage` silently drops failed
 				// credentials, so we need a separate endpoint that captures errors.
@@ -791,13 +963,13 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 				// Provider-format dispatch.
 				const formatRoute = FORMAT_ROUTES[pathname];
 				if (formatRoute && req.method === "POST") {
-					return withCors(await handleFormatEndpoint(formatRoute, opts, req, peer), req);
+					return withCors(await handleFormatEndpoint(formatRoute, bootOpts, req, peer), req);
 				}
 
 				// Pi-native fast path. Same auth + provider plumbing as the
 				// foreign-wire routes, just without the wire-format translation.
 				if (req.method === "POST" && pathname === "/v1/pi/stream") {
-					return withCors(await handlePiNative(opts, req, peer), req);
+					return withCors(await handlePiNative(bootOpts, req, peer), req);
 				}
 
 				// Model catalog.
@@ -829,6 +1001,7 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 		url: `http://${boundHost}:${boundPort}`,
 		port: boundPort,
 		hostname: boundHost,
+		mux,
 		close: async () => {
 			server.stop(true);
 		},

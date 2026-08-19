@@ -7,6 +7,7 @@ import {
 	LayoutDashboard,
 	Plug,
 	Smile,
+	Radio,
 	TrendingUp,
 	Wrench,
 } from "lucide-react";
@@ -22,7 +23,8 @@ export type DashboardSection =
 	| "costs"
 	| "behavior"
 	| "projects"
-	| "gain";
+	| "gain"
+	| "routing";
 
 export interface DashboardRoute {
 	id: DashboardSection;
@@ -82,5 +84,10 @@ export const routes: DashboardRoute[] = [
 		id: "gain",
 		label: "Gain",
 		icon: TrendingUp,
+	},
+	{
+		id: "routing",
+		label: "Routing",
+		icon: Radio,
 	},
 ];

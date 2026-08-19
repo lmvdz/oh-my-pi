@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- `routing_decisions` table storing Switchyard routing decisions and mux seat picks
+- `routing_log_offsets` table for incremental sync of Switchyard `--routing-log-file`
+- `syncRoutingLog()` to parse Switchyard routing log JSONL and insert into stats DB
+- `getRecentRoutingDecisions()` / `insertRoutingDecisions()` / `RoutingDecisionRow` for querying routing data
+- Stats parser extracts `mux_decision` session entries into `routing_decisions` via aggregator sync
+- `syncRoutingLog` exported from aggregator and index
+- Routing log auto-discovered at default path via OMP_ROUTING_LOG_PATH
+- Dashboard `/api/stats/routing` endpoint with cheap/capable breakdown
+- Dashboard routing tab (client-side UI)
+- `syncRoutingQuick()` for fast routing log sync without full session scan
+
 ## [17.3.6] - 2026-08-17
 
 ### Fixed

@@ -43,6 +43,7 @@ import {
 	type LabelEntry,
 	type ModeChangeEntry,
 	type ModelChangeEntry,
+	type MuxDecisionEntry,
 	type NewSessionOptions,
 	type ResetBoundaryEntry,
 	type ServiceTierChangeEntry,
@@ -2172,6 +2173,20 @@ export class SessionManager {
 
 	appendServiceTierChange(serviceTier: ServiceTierByFamily | null): string {
 		const entry: ServiceTierChangeEntry = { type: "service_tier_change", ...this.#freshEntryFields(), serviceTier };
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
+	appendMuxDecision(lane: "cheap" | "capable", target: string, reason: string, traceId?: string): string {
+		const entry: MuxDecisionEntry = {
+			type: "mux_decision",
+			...this.#freshEntryFields(),
+			lane,
+			target,
+			reason,
+			success: true,
+			...(traceId === undefined ? {} : { traceId }),
+		};
 		this.#recordEntry(entry);
 		return entry.id;
 	}

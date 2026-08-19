@@ -1,0 +1,30 @@
+# Merge into ~/.omp/agent/config.yml
+#
+# Second Thought stays off unless the live primary is Anthropic. When
+# mux/capable binds to Max, ST works (same-model cache fork). When it binds
+# to Codex/Grok, ST gates itself off. Do not point reflect at mux/cheap.
+
+modelRoles:
+  default: switchyard/fleet
+  plan: switchyard/ship
+  slow: switchyard/ship
+  smol: mux/cheap
+  task: mux/cheap
+  advisor: xai-oauth/grok-4.6
+
+retry:
+  fallbackChains:
+    default:
+      - switchyard/fleet
+      - mux/cheap
+    smol:
+      - mux/cheap
+    task:
+      - mux/cheap
+    advisor:
+      - xai-oauth/grok-4.6
+      - mux/cheap
+
+# Keep ST default-off until a Max-bound session is confirmed.
+# secondThought:
+#   enabled: true

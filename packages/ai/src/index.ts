@@ -39,6 +39,7 @@ export * from "./usage/ollama";
 export * from "./usage/openai-codex";
 export * from "./usage/openai-codex-reset";
 export * from "./usage/opencode-go";
+export * from "./usage/openrouter";
 export * from "./usage/synthetic";
 export * from "./usage/xai-oauth";
 export * from "./usage/zai";

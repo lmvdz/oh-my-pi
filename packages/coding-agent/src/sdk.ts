@@ -3161,6 +3161,37 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return await extensionRunner.emitBeforeProviderRequest(payload, model);
 		};
 		const onResponse: SimpleStreamOptions["onResponse"] = async (response, model) => {
+			const muxBody = response.body?.x_omp_mux;
+			const mux =
+				typeof muxBody === "object" && muxBody !== null && !Array.isArray(muxBody)
+					? (muxBody as Record<string, unknown>)
+					: undefined;
+			const lane = response.headers["x-omp-mux-lane"] ?? (typeof mux?.lane === "string" ? mux.lane : undefined);
+			const target =
+				response.headers["x-omp-mux-target"] ?? (typeof mux?.target === "string" ? mux.target : undefined);
+			const reason =
+				response.headers["x-omp-mux-reason"] ?? (typeof mux?.reason === "string" ? mux.reason : undefined);
+			const traceId = `${sessionManager.getSessionId()}-${Date.now()}`;
+			if (
+				response.status >= 200 &&
+				response.status < 300 &&
+				(lane === "cheap" || lane === "capable") &&
+				target &&
+				reason
+			) {
+				sessionManager.appendMuxDecision(lane, target, reason, traceId);
+			} else if (
+				response.status >= 200 &&
+				response.status < 300 &&
+				model &&
+				(model.provider === "switchyard" || model.provider === "mux")
+			) {
+				// Switchyard strips x-omp-mux-* headers — derive decision from model id
+				const muxLane = model.id === "fleet" ? "fleet" : model.id === "ship" ? "ship" : model.id;
+				if (muxLane === "cheap" || muxLane === "capable" || muxLane === "fleet" || muxLane === "ship") {
+					sessionManager.appendMuxDecision(muxLane, `${model.provider}/${model.id}`, "switchyard-proxy", traceId);
+				}
+			}
 			await extensionRunner.emitAfterProviderResponse(response, model);
 		};
 

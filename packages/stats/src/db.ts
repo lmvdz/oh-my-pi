@@ -123,6 +123,7 @@ export async function initDb(): Promise<Database> {
 		db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get() !== undefined;
 
 	// Create tables
+
 	db.run(`
 		CREATE TABLE IF NOT EXISTS messages (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,6 +215,35 @@ export async function initDb(): Promise<Database> {
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		);
+
+		CREATE TABLE IF NOT EXISTS routing_decisions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts INTEGER NOT NULL,
+			trace_id TEXT,
+			session_id TEXT,
+			sy_route TEXT,
+			sy_tier TEXT,
+			sy_model TEXT,
+			sy_prompt_tokens INTEGER,
+			sy_cached_tokens INTEGER,
+			sy_completion_tokens INTEGER,
+			sy_reasoning_tokens INTEGER,
+			mux_lane TEXT,
+			mux_target TEXT,
+			mux_reason TEXT,
+			mux_success INTEGER,
+			UNIQUE(ts, trace_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS routing_log_offsets (
+			path TEXT PRIMARY KEY,
+			offset INTEGER NOT NULL,
+			last_modified INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_rd_ts ON routing_decisions(ts);
+		CREATE INDEX IF NOT EXISTS idx_rd_session ON routing_decisions(session_id);
+		CREATE INDEX IF NOT EXISTS idx_rd_tier ON routing_decisions(sy_tier);
+		CREATE INDEX IF NOT EXISTS idx_rd_mux_target ON routing_decisions(mux_target);
 	`);
 
 	const messageColumns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
@@ -459,6 +489,99 @@ export function setFileOffset(sessionFile: string, offset: number, lastModified:
 		VALUES (?, ?, ?)
 	`);
 	stmt.run(sessionFile, offset, lastModified);
+}
+
+export interface RoutingDecisionRow {
+	ts: number;
+	trace_id?: string | null;
+	session_id?: string | null;
+	sy_route?: string | null;
+	sy_tier?: string | null;
+	sy_model?: string | null;
+	sy_prompt_tokens?: number | null;
+	sy_cached_tokens?: number | null;
+	sy_completion_tokens?: number | null;
+	sy_reasoning_tokens?: number | null;
+	mux_lane?: string | null;
+	mux_target?: string | null;
+	mux_reason?: string | null;
+	mux_success?: number | null;
+}
+
+/**
+ * Get the stored offset for the routing log.
+ */
+export function getRoutingLogOffset(logPath: string): { offset: number; lastModified: number } | null {
+	if (!db) return null;
+
+	const stmt = db.prepare("SELECT offset, last_modified FROM routing_log_offsets WHERE path = ?");
+	const row = stmt.get(logPath) as { offset: number; last_modified: number } | undefined;
+
+	return row ? { offset: row.offset, lastModified: row.last_modified } : null;
+}
+
+/**
+ * Update the stored offset for the routing log.
+ */
+export function setRoutingLogOffset(logPath: string, offset: number, lastModified: number): void {
+	if (!db) return;
+
+	const stmt = db.prepare(`
+		INSERT OR REPLACE INTO routing_log_offsets (path, offset, last_modified)
+		VALUES (?, ?, ?)
+	`);
+	stmt.run(logPath, offset, lastModified);
+}
+
+/**
+ * Insert routing decisions into the database.
+ */
+export function insertRoutingDecisions(rows: RoutingDecisionRow[]): number {
+	if (!db || rows.length === 0) return 0;
+
+	const stmt = db.prepare(`
+		INSERT OR IGNORE INTO routing_decisions (
+			ts, trace_id, session_id, sy_route, sy_tier, sy_model,
+			sy_prompt_tokens, sy_cached_tokens, sy_completion_tokens, sy_reasoning_tokens,
+			mux_lane, mux_target, mux_reason, mux_success
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`);
+
+	let inserted = 0;
+	const insert = db.transaction(() => {
+		for (const row of rows) {
+			const result = stmt.run(
+				row.ts,
+				row.trace_id ?? null,
+				row.session_id ?? null,
+				row.sy_route ?? null,
+				row.sy_tier ?? null,
+				row.sy_model ?? null,
+				row.sy_prompt_tokens ?? null,
+				row.sy_cached_tokens ?? null,
+				row.sy_completion_tokens ?? null,
+				row.sy_reasoning_tokens ?? null,
+				row.mux_lane ?? null,
+				row.mux_target ?? null,
+				row.mux_reason ?? null,
+				row.mux_success ?? null,
+			);
+			if (result.changes > 0) inserted++;
+		}
+	});
+
+	insert();
+	return inserted;
+}
+
+/**
+ * Get recent routing decisions.
+ */
+export function getRecentRoutingDecisions(limit: number): RoutingDecisionRow[] {
+	if (!db) return [];
+
+	const stmt = db.prepare("SELECT * FROM routing_decisions ORDER BY ts DESC LIMIT ?");
+	return stmt.all(limit) as RoutingDecisionRow[];
 }
 
 /**

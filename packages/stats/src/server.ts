@@ -11,6 +11,7 @@ import {
 	getModelDashboardStats,
 	getOverviewStats,
 	getProviderDashboardStats,
+	getRoutingDashboardStats,
 	getRecentErrors,
 	getRecentRequests,
 	getRequestDetails,
@@ -282,6 +283,11 @@ export async function handleApi(req: Request): Promise<Response> {
 		return Response.json(stats);
 	}
 
+	if (path === "/api/stats/routing") {
+		const stats = await getRoutingDashboardStats(range);
+		return Response.json(stats);
+	}
+
 	return new Response("Not Found", { status: 404 });
 }
 
@@ -370,6 +376,17 @@ export async function startServer(
 	port = 3847,
 	hostname = STATS_DASHBOARD_HOSTNAME,
 ): Promise<{ hostname: string; port: number; stop: () => void }> {
+	// Default routing log path so /api/sync picks it up.
+	if (!process.env.OMP_ROUTING_LOG_PATH) {
+		const homeDir = process.env.HOME || os.homedir();
+		const defaultPath = path.join(homeDir, ".omp", "switchyard-routing.jsonl");
+		try {
+			if (await Bun.file(defaultPath).exists()) {
+				process.env.OMP_ROUTING_LOG_PATH = defaultPath;
+			}
+		} catch {}
+	}
+
 	await ensureClientBuild();
 	const preparation = await prepareStatsPort(port, hostname);
 	if (preparation === "reuse") {

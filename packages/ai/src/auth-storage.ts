@@ -65,6 +65,7 @@ import {
 	pickSoonestExpiringCredit,
 } from "./usage/openai-codex-reset";
 import { opencodeGoRankingStrategy, opencodeGoUsageProvider } from "./usage/opencode-go";
+import { openrouterUsageProvider } from "./usage/openrouter";
 import { syntheticUsageProvider } from "./usage/synthetic";
 import { umansUsageProvider } from "./usage/umans";
 import { xaiOauthUsageProvider } from "./usage/xai-oauth";
@@ -670,6 +671,7 @@ const DEFAULT_USAGE_PROVIDERS: UsageProvider[] = [
 	cursorUsageProvider,
 	syntheticUsageProvider,
 	xaiOauthUsageProvider,
+	openrouterUsageProvider,
 ];
 
 const DEFAULT_USAGE_PROVIDER_MAP = new Map<Provider, UsageProvider>(

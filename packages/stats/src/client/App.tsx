@@ -11,6 +11,7 @@ import {
 	OverviewRoute,
 	ProjectsRoute,
 	ProvidersRoute,
+	RoutingRoute,
 	RequestsRoute,
 	ToolsRoute,
 } from "./routes";
@@ -86,6 +87,8 @@ export default function App() {
 				return <ProjectsRoute active={isActive} range={range} refreshTrigger={refreshTrigger} />;
 			case "gain":
 				return <GainRoute active={isActive} range={range} refreshTrigger={refreshTrigger} />;
+			case "routing":
+				return <RoutingRoute active={isActive} refreshTrigger={refreshTrigger} />;
 		}
 	};
 

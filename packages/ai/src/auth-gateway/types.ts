@@ -8,6 +8,7 @@ import type {
 	ServiceTier,
 	TokenTaskBudget,
 } from "../types";
+import type { MuxRuntime } from "./mux";
 
 /**
  * Wire types for the omp auth-gateway.
@@ -150,4 +151,6 @@ export interface AuthGatewayServerHandle {
 	port: number;
 	hostname: string;
 	close(): Promise<void>;
+	/** Quota mux runtime when enabled. */
+	mux?: MuxRuntime;
 }

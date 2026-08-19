@@ -93,6 +93,15 @@ export interface ServiceTierChangeEntry extends SessionEntryBase {
 	serviceTier: ServiceTierByFamily | null;
 }
 
+export interface MuxDecisionEntry extends SessionEntryBase {
+	type: "mux_decision";
+	lane: "cheap" | "capable";
+	target: string;
+	reason: string;
+	success: boolean;
+	traceId?: string;
+}
+
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -268,6 +277,7 @@ export type SessionEntry =
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
 	| ServiceTierChangeEntry
+	| MuxDecisionEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| CustomEntry

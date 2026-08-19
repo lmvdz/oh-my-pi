@@ -338,6 +338,8 @@ export interface ProviderResponseMetadata {
 	headers: Record<string, string>;
 	requestId?: string | null;
 	metadata?: Record<string, unknown>;
+	/** Parsed provider response body, when the transport makes it available. */
+	body?: Record<string, unknown>;
 }
 
 export interface RawSseEvent {

@@ -156,7 +156,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Developer",
 	],
 	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills"],
-	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
+	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy", "Quota Router"],
 };
 
 /** Status line segment identifiers */
@@ -405,6 +405,60 @@ export const SETTINGS_SCHEMA = {
 	// per-machine overrides remain trivial.
 	"auth.broker.url": { type: "string", default: undefined },
 	"auth.broker.token": { type: "string", default: undefined, credential: true },
+
+	// Quota-router sidecar (broker + mux gateway + Switchyard). Off by default.
+	// When enabled, interactive `omp` ensures the stack is up and injects
+	// OMP_AUTH_GATEWAY_TOKEN so models.yml can reach mux/switchyard.
+	"quotaRouter.enabled": {
+		type: "boolean",
+		default: false,
+		ui: { tab: "providers", group: "Quota Router", label: "Enable Quota Router", description: "Auto-start the quota-router sidecar (broker → mux gateway → Switchyard) on interactive `omp` boot" },
+	},
+	"quotaRouter.broker": {
+		type: "boolean",
+		default: true,
+		ui: { tab: "providers", group: "Quota Router", label: "Start Broker", description: "Start the auth broker alongside the gateway" },
+	},
+	"quotaRouter.gateway": {
+		type: "boolean",
+		default: true,
+		ui: { tab: "providers", group: "Quota Router", label: "Start Gateway", description: "Start the mux auth gateway" },
+	},
+	"quotaRouter.switchyard": {
+		type: "boolean",
+		default: true,
+		ui: { tab: "providers", group: "Quota Router", label: "Start Switchyard", description: "Start the Switchyard routing proxy in front of the gateway" },
+	},
+	"quotaRouter.root": {
+		type: "string",
+		default: undefined,
+		ui: { tab: "providers", group: "Quota Router", label: "Project Root", description: "Path to the omp-quota-router project root (contains deploy/quota-router/start.sh)" },
+	},
+	"quotaRouter.gatewayBind": {
+		type: "string",
+		default: "127.0.0.1:4010",
+		ui: { tab: "providers", group: "Quota Router", label: "Gateway Bind", description: "Host:port for the mux auth gateway" },
+	},
+	"quotaRouter.switchyardBind": {
+		type: "string",
+		default: "127.0.0.1:4001",
+		ui: { tab: "providers", group: "Quota Router", label: "Switchyard Bind", description: "Host:port for the Switchyard routing proxy" },
+	},
+	"quotaRouter.brokerUrl": {
+		type: "string",
+		default: "http://127.0.0.1:8765",
+		ui: { tab: "providers", group: "Quota Router", label: "Broker URL", description: "URL of the OMP auth broker" },
+	},
+	"quotaRouter.muxCheap": {
+		type: "string",
+		default: "openrouter/deepseek/deepseek-v4-flash",
+		ui: { tab: "providers", group: "Quota Router", label: "Mux Cheap Model", description: "Provider/model for the mux/cheap lane (e.g. openrouter/deepseek/deepseek-v4-flash)" },
+	},
+	"quotaRouter.muxCapable": {
+		type: "string",
+		default: "anthropic/claude-opus-5,openai-codex/gpt-5.6-sol,xai-oauth/grok-4.6",
+		ui: { tab: "providers", group: "Quota Router", label: "Mux Capable Models", description: "Comma-separated provider/model list for the mux/capable lane, tried in order" },
+	},
 
 	autoResume: {
 		type: "boolean",
@@ -5913,6 +5967,19 @@ export interface TtsrSettings {
 
 export type SecondThoughtAtom = (typeof SECOND_THOUGHT_ATOMS)[number];
 
+export interface QuotaRouterSettings {
+	enabled: boolean;
+	broker: boolean;
+	gateway: boolean;
+	switchyard: boolean;
+	root: string | undefined;
+	gatewayBind: string;
+	switchyardBind: string;
+	brokerUrl: string;
+	muxCheap: string;
+	muxCapable: string;
+}
+
 export interface SecondThoughtSettings {
 	enabled: boolean;
 	branchCount: number;
@@ -6003,6 +6070,7 @@ export interface GroupTypeMap {
 	commit: CommitSettings;
 	ttsr: TtsrSettings;
 	secondThought: SecondThoughtSettings;
+	quotaRouter: QuotaRouterSettings;
 	exa: ExaSettings;
 	statusLine: StatusLineSettings;
 	thinkingBudgets: ThinkingBudgetsSettings;

@@ -296,6 +296,41 @@ function extractToolResultLink(sessionFile: string, entry: SessionMessageEntry):
 
 const LF = 0x0a;
 const CR = 0x0d;
+
+interface ParsedMuxDecision {
+	ts: number;
+	lane: "cheap" | "capable";
+	target: string;
+	reason: string;
+	success: boolean;
+}
+
+function extractMuxDecision(entry: SessionEntry): ParsedMuxDecision | null {
+	const decision = entry as Partial<{
+		timestamp: string;
+		lane: string;
+		target: string;
+		reason: string;
+		success: boolean;
+	}>;
+	if (
+		(decision.lane !== "cheap" && decision.lane !== "capable") ||
+		typeof decision.target !== "string" ||
+		typeof decision.reason !== "string" ||
+		typeof decision.success !== "boolean"
+	) {
+		return null;
+	}
+	const ts = Date.parse(decision.timestamp ?? "");
+	return {
+		ts: Number.isFinite(ts) ? ts : 0,
+		lane: decision.lane,
+		target: decision.target,
+		reason: decision.reason,
+		success: decision.success,
+	};
+}
+
 const jsonLineDecoder = new TextDecoder();
 
 function parseJsonLine(bytes: Uint8Array, start: number, end: number): SessionEntry | null {
@@ -366,6 +401,7 @@ export interface ParseSessionResult {
 	userLinks: UserMessageLink[];
 	toolCalls: ToolCallStats[];
 	toolResults: ToolResultLink[];
+	muxDecisions: ParsedMuxDecision[];
 	newOffset: number;
 }
 export async function parseSessionFile(sessionPath: string, fromOffset = 0): Promise<ParseSessionResult> {
@@ -374,7 +410,15 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 		bytes = await Bun.file(sessionPath).bytes();
 	} catch (err) {
 		if (isEnoent(err))
-			return { stats: [], userStats: [], userLinks: [], toolCalls: [], toolResults: [], newOffset: fromOffset };
+			return {
+				stats: [],
+				userStats: [],
+				userLinks: [],
+				toolCalls: [],
+				toolResults: [],
+				muxDecisions: [],
+				newOffset: fromOffset,
+			};
 		throw err;
 	}
 
@@ -385,6 +429,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	const userLinks: UserMessageLink[] = [];
 	const toolCalls: ToolCallStats[] = [];
 	const toolResults: ToolResultLink[] = [];
+	const muxDecisions: ParsedMuxDecision[] = [];
 	const userByEntryId = new Map<string, UserMessageStats>();
 	const start = Math.max(0, Math.min(fromOffset, bytes.length));
 	const unprocessed = bytes.subarray(start);
@@ -396,6 +441,11 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	for (const entry of entries) {
 		if (isServiceTierChange(entry)) {
 			currentServiceTier = coerceServiceTierByFamily(entry.serviceTier);
+			continue;
+		}
+		if (entry.type === "mux_decision") {
+			const muxDecision = extractMuxDecision(entry);
+			if (muxDecision) muxDecisions.push(muxDecision);
 			continue;
 		}
 		if (isUserMessage(entry)) {
@@ -437,7 +487,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 		}
 	}
 
-	return { stats, userStats, userLinks, toolCalls, toolResults, newOffset: start + read };
+	return { stats, userStats, userLinks, toolCalls, toolResults, muxDecisions, newOffset: start + read };
 }
 
 /**

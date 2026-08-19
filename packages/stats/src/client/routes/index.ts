@@ -7,4 +7,5 @@ export * from "./OverviewRoute";
 export * from "./ProjectsRoute";
 export * from "./ProvidersRoute";
 export * from "./RequestsRoute";
+export * from "./RoutingRoute";
 export * from "./ToolsRoute";

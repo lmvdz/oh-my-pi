@@ -1,0 +1,45 @@
+# Switchyard sees two targets only. The gateway behind them owns seats + quota.
+# Render with render-config.sh — do not point switchyard-server at this file.
+schema_version = 1
+
+[llm_clients.mux]
+format = "openai_chat"
+base_url = "${OMP_MUX_URL}"
+api_key_env = "OMP_AUTH_GATEWAY_TOKEN"
+max_retries = 2
+
+[targets.cheap]
+id = "mux/cheap"
+llm_client = "mux"
+
+[targets.capable]
+id = "mux/capable"
+llm_client = "mux"
+
+# Overnight / fleet: stay cheap until tool signals say the run is stuck.
+# stage_router has no session_affinity field — it decides per turn from
+# tool-result history.
+[routes.fleet]
+id = "fleet"
+type = "stage_router"
+efficient_target = "cheap"
+capable_target = "capable"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_turn_window = 3
+
+# Explicit ship lane: serve cheap first, latch to capable after two
+# escalate verdicts. confirmations > 1 needs x-switchyard-session-id.
+[routes.ship]
+id = "ship"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "cheap"
+weak_target = "cheap"
+strong_target = "capable"
+escalation = { confirmations = 2, recent_turn_window = 28 }
+
+[routes.cheap_only]
+id = "flash"
+type = "passthrough"
+target = "cheap"

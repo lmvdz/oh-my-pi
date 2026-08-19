@@ -9,11 +9,14 @@ import { formatStatsDashboardUrl, startServer } from "./server";
 export {
 	getDashboardStats,
 	getToolDashboardStats,
+	getRoutingDashboardStats,
+	type RoutingDashboardStats,
 	getTotalMessageCount,
 	type SyncOptions,
 	type SyncProgress,
-	smokeTestSyncWorker,
 	syncAllSessions,
+	syncRoutingLog,
+	syncRoutingQuick,
 } from "./aggregator";
 export { closeDb } from "./db";
 export { getGainDashboardStats } from "./gain-aggregator";

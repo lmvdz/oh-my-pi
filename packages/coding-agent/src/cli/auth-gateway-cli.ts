@@ -209,7 +209,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	// a client-requested `model` field into a pi-ai `Model<Api>` before dispatch;
 	// `listModels` powers `/v1/models`.
 	const snapshot = storage.exportSnapshot();
-	const providersWithCreds = new Set<string>();
+	let providersWithCreds = new Set<string>();
 	for (const entry of snapshot.credentials) providersWithCreds.add(entry.provider);
 	const registry = new ModelRegistry(storage, undefined, { ignoreLocalModelConfig: true });
 	await registry.refresh();
@@ -239,6 +239,12 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		void registry
 			.refresh()
 			.then(() => {
+				// Re-read the broker snapshot. A login after boot (OpenRouter,
+				// xAI, …) must become routable — the boot-time set is stale.
+				providersWithCreds = new Set();
+				for (const entry of storage.exportSnapshot().credentials) {
+					providersWithCreds.add(entry.provider);
+				}
 				modelById = indexModelsByRequestId(registry.getAll(), providersWithCreds);
 			})
 			.catch(error => {

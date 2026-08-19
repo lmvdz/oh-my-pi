@@ -312,6 +312,10 @@ export function resolveOpenAIRequestSetup(
 	if (options.promptCacheSessionId && model.compat?.promptCacheSessionHeader) {
 		setHeaderIfAbsent(headers, model.compat.promptCacheSessionHeader, options.promptCacheSessionId);
 	}
+	// Switchyard writes this session identifier to its routing log.
+	if (options.promptCacheSessionId && model.provider === "switchyard") {
+		setHeaderIfAbsent(headers, "x-switchyard-session-id", options.promptCacheSessionId);
+	}
 
 	if (options.defaultBaseUrl !== undefined) {
 		baseUrl = baseUrl ?? ($env.OPENAI_BASE_URL?.trim() || options.defaultBaseUrl);

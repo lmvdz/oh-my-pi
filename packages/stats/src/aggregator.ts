@@ -1,5 +1,8 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { syncRoutingLog } from "./routing-log";
+export { syncRoutingLog } from "./routing-log";
 import { getStatsDbPath, workerHostEntry } from "@oh-my-pi/pi-utils";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import {
@@ -22,10 +25,13 @@ import {
 	getStatsByModel,
 	getStatsByProvider,
 	getTimeSeries,
+	getRecentRoutingDecisions,
 	getToolStats,
 	getToolStatsByModel,
 	getToolTimeSeries,
 	initDb,
+	insertRoutingDecisions,
+	type RoutingDecisionRow,
 	insertMessageStats,
 	insertToolCalls,
 	insertUserMessageStats,
@@ -78,8 +84,19 @@ function applyParseResult(sessionFile: string, lastModified: number, result: Par
 	if (result.userLinks.length > 0) updateUserMessageLinks(result.userLinks);
 	if (result.toolCalls.length > 0) insertToolCalls(result.toolCalls);
 	if (result.toolResults.length > 0) updateToolResults(result.toolResults);
+	if (result.muxDecisions.length > 0) {
+		const rows: RoutingDecisionRow[] = result.muxDecisions.map(d => ({
+			ts: d.ts,
+			session_id: null,
+			mux_lane: d.lane,
+			mux_target: d.target,
+			mux_reason: d.reason,
+			mux_success: d.success ? 1 : 0,
+		}));
+		insertRoutingDecisions(rows);
+	}
 	setFileOffset(sessionFile, result.newOffset, lastModified);
-	return result.stats.length + result.userStats.length;
+	return result.stats.length + result.userStats.length + result.muxDecisions.length;
 }
 
 /**
@@ -241,8 +258,91 @@ export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: 
 	return withStatsSyncLock(getStatsDbPath(), () => syncAllSessionsLocked(opts));
 }
 
+/**
+ * Sync routing data without scanning the complete session archive.
+ */
+export async function syncRoutingQuick(): Promise<{ routingLog: number; sessionFiles: number }> {
+	return withStatsSyncLock(getStatsDbPath(), syncRoutingQuickLocked);
+}
+
+async function syncRoutingQuickLocked(): Promise<{ routingLog: number; sessionFiles: number }> {
+	await initDb();
+
+	let routingLog = 0;
+	const logPath = process.env.OMP_ROUTING_LOG_PATH;
+	if (logPath) routingLog = await syncRoutingLog(logPath);
+
+	let sessionFiles = 0;
+	try {
+		const sessionsDir = path.join(os.homedir(), ".omp", "agent", "sessions");
+		const entries = await fs.promises.readdir(sessionsDir, { withFileTypes: true });
+		const dirs = entries
+			.filter(entry => entry.isDirectory())
+			.map(entry => ({ path: path.join(sessionsDir, entry.name) }));
+		const withMtime = await Promise.all(
+			dirs.map(async dir => ({ ...dir, mtime: (await fs.promises.stat(dir.path)).mtimeMs })),
+		);
+		const recent = withMtime.sort((a, b) => b.mtime - a.mtime).slice(0, 5);
+		const muxDecisions: RoutingDecisionRow[] = [];
+
+		for (const dir of recent) {
+			let files: string[];
+			try {
+				files = await fs.promises.readdir(dir.path);
+			} catch {
+				continue;
+			}
+			for (const file of files) {
+				if (!file.endsWith(".jsonl")) continue;
+				const text = await Bun.file(path.join(dir.path, file)).text();
+				for (const line of text.split("\n")) {
+					if (!line.trim()) continue;
+					try {
+						const data = JSON.parse(line) as {
+							type?: unknown;
+							timestamp?: unknown;
+							lane?: unknown;
+							target?: unknown;
+							reason?: unknown;
+							success?: unknown;
+						};
+						if (
+							data.type !== "mux_decision" ||
+							(data.lane !== "cheap" && data.lane !== "capable") ||
+							typeof data.target !== "string" ||
+							typeof data.reason !== "string" ||
+							typeof data.success !== "boolean"
+						) {
+							continue;
+						}
+						const ts = typeof data.timestamp === "string" ? Date.parse(data.timestamp) : 0;
+						muxDecisions.push({
+							ts: Number.isFinite(ts) ? ts : 0,
+							mux_lane: data.lane,
+							mux_target: data.target,
+							mux_reason: data.reason,
+							mux_success: data.success ? 1 : 0,
+						});
+						sessionFiles++;
+					} catch {}
+				}
+			}
+		}
+		insertRoutingDecisions(muxDecisions);
+	} catch {}
+
+	return { routingLog, sessionFiles };
+}
+
 async function syncAllSessionsLocked(opts?: SyncOptions): Promise<{ processed: number; files: number }> {
 	await initDb();
+	const routingLogPath = process.env.OMP_ROUTING_LOG_PATH;
+	if (routingLogPath) {
+		try {
+			const { syncRoutingLog } = await import("./routing-log");
+			await syncRoutingLog(routingLogPath);
+		} catch {}
+	}
 
 	const files = await listAllSessionFiles();
 	let totalProcessed = 0;
@@ -558,5 +658,45 @@ export async function getProviderDashboardStats(range?: string | null): Promise<
 		series: getProviderTimeSeries(modelSeriesDays, cutoff, modelSeriesBucketMs),
 		usageSeries,
 		windowInsights,
+	};
+}
+
+export interface RoutingDashboardStats {
+	total: number;
+	cheapCount: number;
+	capableCount: number;
+	byRoute: Record<string, number>;
+	recent: Array<{
+		ts: number;
+		route: string | null;
+		tier: string | null;
+		target: string | null;
+		reason: string | null;
+	}>;
+}
+
+export async function getRoutingDashboardStats(range?: string | null): Promise<RoutingDashboardStats> {
+	await syncRoutingQuick();
+	const decisions = getRecentRoutingDecisions(500);
+	const cheap = decisions.filter(d => d.mux_lane === "cheap" || (d.sy_tier === null && d.sy_model === "cheap"));
+	const capable = decisions.filter(d => d.mux_lane === "capable" || (d.sy_tier === null && d.sy_model === "capable"));
+	const byRoute: Record<string, number> = {};
+	for (const d of decisions) {
+		byRoute[d.sy_route ?? "mux"] = (byRoute[d.sy_route ?? "mux"] ?? 0) + 1;
+	}
+	return {
+		total: decisions.length,
+		cheapCount: cheap.length,
+		capableCount: capable.length,
+		byRoute,
+		recent: decisions
+			.slice(0, 50)
+			.map(d => ({
+				ts: d.ts,
+				route: d.sy_route ?? d.mux_lane,
+				tier: d.sy_tier,
+				target: d.sy_model ?? d.mux_target,
+				reason: d.mux_reason,
+			})),
 	};
 }
