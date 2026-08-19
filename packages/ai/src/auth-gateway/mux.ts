@@ -23,6 +23,13 @@ export interface MuxPolicy {
 	fiveHourCloseAt: number;
 	/** Close mux/cheap when remaining OpenRouter USD drops to this (default 0.05). */
 	cheapMinUsd?: number;
+	/**
+	 * Hard cap on output tokens for the cheap lane, so a cheap model that never
+	 * emits a terminal chunk (e.g. deepseek-v4-flash on OpenRouter truncates long
+	 * streams) instead ends with `finish_reason:"length"` — a clean, detectable
+	 * signal the agent can act on. Undefined = no cap.
+	 */
+	cheapMaxOutputTokens?: number;
 	cheap: MuxTarget;
 	capableOrder: MuxTarget[];
 }
@@ -37,17 +44,13 @@ export interface MuxSeatStatus {
 	reason?: MuxCloseReason;
 }
 
-export type MuxDecision =
-	| { ok: true; lane: MuxLane; target: MuxTarget; sticky: boolean; reason: string }
-	| { ok: false; lane: MuxLane; reason: string; seats: MuxSeatStatus[] };
-
-export const MUX_CHEAP_ID = "mux/cheap";
-export const MUX_CAPABLE_ID = "mux/capable";
-
 export const DEFAULT_MUX_POLICY: MuxPolicy = {
 	weeklyCloseAt: 0.7,
 	fiveHourCloseAt: 0.6,
 	cheapMinUsd: 0.05,
+	// The cheap lane's default cap. deepseek-v4-flash on OpenRouter truncates
+	// long streams without a terminal chunk; 4096 keeps output bounded and clean.
+	cheapMaxOutputTokens: 4096,
 	cheap: { provider: "openrouter", id: "deepseek/deepseek-v4-flash" },
 	capableOrder: [
 		{ provider: "anthropic", id: "claude-opus-5" },
@@ -55,6 +58,9 @@ export const DEFAULT_MUX_POLICY: MuxPolicy = {
 		{ provider: "xai-oauth", id: "grok-4.6" },
 	],
 };
+
+export const MUX_CHEAP_ID = "mux/cheap";
+export const MUX_CAPABLE_ID = "mux/capable";
 
 /** Parse `mux/cheap` / `mux/capable` (also bare `cheap` / `capable`). */
 export function parseMuxLane(modelId: string): MuxLane | undefined {
@@ -93,6 +99,7 @@ export function loadMuxPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): MuxP
 	const weekly = parseUnitInterval(env.OMP_MUX_WEEKLY_CLOSE, DEFAULT_MUX_POLICY.weeklyCloseAt);
 	const fiveHour = parseUnitInterval(env.OMP_MUX_FIVE_HOUR_CLOSE, DEFAULT_MUX_POLICY.fiveHourCloseAt);
 	const cheapMinUsd = parseNonNegative(env.OMP_MUX_CHEAP_MIN_USD, DEFAULT_MUX_POLICY.cheapMinUsd);
+	const cheapCap = parsePositiveInt(env.OMP_MUX_CHEAP_MAX_OUTPUT_TOKENS, DEFAULT_MUX_POLICY.cheapMaxOutputTokens);
 	const cheap = (env.OMP_MUX_CHEAP ? parseMuxTarget(env.OMP_MUX_CHEAP) : undefined) ?? DEFAULT_MUX_POLICY.cheap;
 	const capableOrder = env.OMP_MUX_CAPABLE
 		? parseCapableOrder(env.OMP_MUX_CAPABLE)
@@ -101,6 +108,7 @@ export function loadMuxPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): MuxP
 		weeklyCloseAt: weekly,
 		fiveHourCloseAt: fiveHour,
 		cheapMinUsd,
+		cheapMaxOutputTokens: cheapCap,
 		cheap,
 		capableOrder: capableOrder.length > 0 ? capableOrder : DEFAULT_MUX_POLICY.capableOrder,
 	};
@@ -118,6 +126,13 @@ function parseNonNegative(raw: string | undefined, fallback: number): number {
 	const n = Number(raw);
 	if (!Number.isFinite(n) || n < 0) return fallback;
 	return n;
+}
+
+function parsePositiveInt(raw: string | undefined, fallback: number | undefined): number | undefined {
+	if (raw === undefined || raw === "") return fallback;
+	const n = Number(raw);
+	if (!Number.isFinite(n) || n <= 0) return fallback;
+	return Math.floor(n);
 }
 
 export interface CheapCreditSnapshot {

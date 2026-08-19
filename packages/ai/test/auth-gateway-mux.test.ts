@@ -63,16 +63,22 @@ describe("mux policy parse", () => {
 			OMP_MUX_WEEKLY_CLOSE: "0.65",
 			OMP_MUX_FIVE_HOUR_CLOSE: "0.5",
 			OMP_MUX_CHEAP: "deepseek/deepseek-v4-flash",
+			OMP_MUX_CHEAP_MAX_OUTPUT_TOKENS: "2048",
 			OMP_MUX_CAPABLE: "anthropic/claude-fable-5,xai-oauth/grok-4.6",
 		});
 		expect(policy.weeklyCloseAt).toBe(0.65);
 		expect(policy.fiveHourCloseAt).toBe(0.5);
 		expect(policy.cheapMinUsd).toBe(0.05);
+		expect(policy.cheapMaxOutputTokens).toBe(2048);
 		expect(policy.cheap).toEqual({ provider: "deepseek", id: "deepseek-v4-flash" });
 		expect(policy.capableOrder).toEqual([
 			{ provider: "anthropic", id: "claude-fable-5" },
 			{ provider: "xai-oauth", id: "grok-4.6" },
 		]);
+	});
+
+	it("defaults cheapMaxOutputTokens in the default policy", () => {
+		expect(DEFAULT_MUX_POLICY.cheapMaxOutputTokens).toBe(4096);
 	});
 });
 

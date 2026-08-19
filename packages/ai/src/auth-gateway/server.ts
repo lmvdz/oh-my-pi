@@ -50,6 +50,7 @@ import {
 	parseMuxLane,
 	type MuxDecision,
 	cheapCreditSnapshot,
+	DEFAULT_MUX_POLICY,
 	seatStatus,
 } from "./mux";
 import type {
@@ -575,6 +576,17 @@ async function handleFormatEndpoint(
 	}
 
 	const streamOpts = buildStreamOptions(parsed, model.api, controller.signal);
+	// Cap the cheap lane's output so a model that never emits a terminal chunk
+	// ends with finish_reason:"length" instead of a dangling stream. Applies on
+	// both the cheap lane and a capable-overflow that lands on cheap.
+	if (mux && (mux.lane === "cheap" || mux.reason === "capable-overflow")) {
+		const cap = bootOpts.mux?.policy.cheapMaxOutputTokens ?? DEFAULT_MUX_POLICY.cheapMaxOutputTokens;
+		if (cap !== undefined) {
+			streamOpts.maxTokens = streamOpts.maxTokens === undefined
+				? cap
+				: Math.min(streamOpts.maxTokens, cap);
+		}
+	}
 	streamOpts.apiKey = buildGatewayApiKeyResolver(
 		bootOpts.storage,
 		model,
