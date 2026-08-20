@@ -19,6 +19,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"security_scan",
 	"task",
 	"hub",
+	"canvas",
 	"todo",
 	"web_search",
 	"write",

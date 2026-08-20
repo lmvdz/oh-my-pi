@@ -4,6 +4,8 @@
 
 ### Added
 
+- `/canvas` opens a local, session-persisted Excalidraw board in a terminal-browser split pane or a WSL browser companion, with semantic agent drawing and a live todo dashboard
+- Canvas companions recognize the active terminal host, including tmux, cmux, HerdR, WezTerm, and kitty
 - `omp fleet status` command showing recent Switchyard routing decisions and live mux seat state
 - `MuxDecisionEntry` session entry type recording mux lane/target/reason per request
 - Mux decisions written to session file on successful gateway response via `SessionManager.appendMuxDecision()`
@@ -13,9 +15,16 @@
 - `x_omp_mux` response body field from gateway for cheap/capable routing
 - `x-switchyard-session-id` header for Switchyard routing log correlation
 - `quotaRouter` settings UI in /settings → Providers → Quota Router
+- `quotaRouter.muxVision` setting for the image-capable mux target order (defaults to OpenRouter Qwen3.8-27B)
+- Isolated vision sidecar preprocessing for image attachments: parent requests receive a saved local reference plus description rather than raw pixels
+- Canvas diagrams can now replace a prior scene, choose vertical or horizontal flow, and use semantic visual roles for core, optional, supporting, and external systems.
+- Canvas generation now includes a headless Excalidraw review render that agents can inspect with the configured vision model before accepting a diagram.
+- Added a project `canvas-design` skill for compact, legible Excalidraw architectures, plans, and flows.
 
 ### Fixed
 
+- Kept session-specific canvas tools out of the shared `xd://` device namespace, preventing concurrent OMP sessions from contending for one canvas lease.
+- Prevented generated Excalidraw connectors from rebinding through node centres after a scene reload.
 - Session file scanner now recurses into subdirectories
 - Cache session mtime to avoid rescanning unchanged dirs
 - Missing commandConsumed import in fleet slash command

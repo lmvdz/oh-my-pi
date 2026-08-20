@@ -40,14 +40,17 @@
     "fmt": "biome format --write . && bun run format-prompts",
     "format-prompts": "bun scripts/format-prompts.ts",
     "gen:tool-views": "bun --cwd=../collab-web run gen:tool-views",
+
+    "gen:canvas": "bun scripts/build-canvas.ts",
     "gen:bundle": "bun scripts/bundle-dist.ts",
     "gen:native": "bun --cwd=../natives run gen:native",
     "gen:native:reset": "bun --cwd=../natives run gen:native:reset",
-    "prepack": "bun run gen:tool-views && bun run gen:bundle",
+    "prepack": "bun run gen:tool-views && bun run gen:canvas && bun run gen:bundle",
     "bench:guard": "bun scripts/bench-guard.ts"
   },
   "dependencies": {
     "@babel/parser": "catalog:",
+    "@excalidraw/excalidraw": "0.18.1",
     "@oh-my-pi/hashline": "catalog:",
     "@oh-my-pi/omp-stats": "catalog:",
     "@oh-my-pi/omptype": "catalog:",
@@ -71,7 +74,9 @@
     "@opentelemetry/sdk-metrics": "catalog:",
     "@opentelemetry/sdk-trace-base": "catalog:",
     "@opentelemetry/sdk-trace-node": "catalog:",
-    "puppeteer-core": "catalog:"
+    "puppeteer-core": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "catalog:",
@@ -85,7 +90,11 @@
   },
   "files": [
     "src",
+    "src/canvas/assets",
+    "src/canvas/asset-manifest.generated.ts",
     "dist/cli.js",
+    "dist/app-*",
+    "dist/*.woff2",
     "dist/docs-index.generated.txt",
     "dist/CHANGELOG-*.md",
     "dist/*.node",

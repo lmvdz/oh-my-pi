@@ -69,12 +69,17 @@ describe("read and write route xd:// device URLs", () => {
 			// xdev on: ast_edit is unmounted into xd://; write stays in the toolset.
 			const write = tools.find(entry => entry.name === "write");
 			const read = tools.find(entry => entry.name === "read");
+			const canvas = tools.find(entry => entry.name === "canvas");
 			expect(read).toBeDefined();
 			expect(write).toBeDefined();
+			// Canvas resolves its server from this session's artifact directory, so
+			// it must keep that session boundary rather than share xd://canvas.
+			expect(canvas).toBeDefined();
 			expect(tools.some(entry => entry.name === "ast_edit")).toBe(false);
 
 			const listing = await read!.execute("read-xd-list", { path: "xd://" });
 			expect(listing.content.find(entry => entry.type === "text")?.text).toContain("xd://ast_edit");
+			expect(listing.content.find(entry => entry.type === "text")?.text).not.toContain("xd://canvas");
 			const docs = await read!.execute("read-xd-docs", { path: "xd://ast_edit" });
 			expect(docs.content.find(entry => entry.type === "text")?.text).toContain("# ast_edit");
 

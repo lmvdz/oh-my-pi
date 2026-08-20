@@ -5,6 +5,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { isRecord, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { updateCanvasPlanDashboard } from "../canvas/dashboard";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
@@ -884,7 +885,10 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const failed = errors.length > 0;
 		const effective = failed ? previousPhases : updated;
 		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, updated);
-		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
+		if (!readOnly && !failed) {
+			this.session.setTodoPhases?.(updated);
+			await updateCanvasPlanDashboard(this.session.getArtifactsDir?.(), updated);
+		}
 		const details: TodoToolDetails = { op, phases: effective, storage };
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 

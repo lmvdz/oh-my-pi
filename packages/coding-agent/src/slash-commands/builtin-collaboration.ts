@@ -1,5 +1,6 @@
 import { Spacer } from "@oh-my-pi/pi-tui";
 import { APP_NAME } from "@oh-my-pi/pi-utils";
+import { openCanvas } from "../canvas/launcher";
 import { CollabGuestLink } from "../collab/guest";
 import { CollabHost } from "../collab/host";
 import type { SettingPath, SettingValue } from "../config/settings";
@@ -9,6 +10,7 @@ import { shareSession } from "../export/share";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
 import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
+import { shortenPath } from "../tools/render-utils";
 import { urlHyperlinkAlways } from "../tui";
 import { copyToClipboard } from "../utils/clipboard";
 import { refreshStatusLine } from "./builtin-modes";
@@ -385,6 +387,31 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				return;
 			}
 			ctx.showStatus("Not in a collab session");
+		},
+	},
+	{
+		name: "canvas",
+		description: "Open the active session canvas",
+		handleTui: async (_command, runtime) => {
+			const artifactsDir = runtime.ctx.sessionManager.getArtifactsDir();
+			if (!artifactsDir) {
+				runtime.ctx.showWarning("Canvas is unavailable until this session has a persistent artifact directory");
+				return;
+			}
+			try {
+				const { host, scenePath, target, url } = await openCanvas(artifactsDir);
+				if (target === "external-browser") {
+					const fallback = urlHyperlinkAlways(url, theme.fg("accent", `\x1b[4m${url}\x1b[24m`));
+					runtime.ctx.showStatus(
+						`Canvas opened in your browser (WSL companion): ${shortenPath(scenePath)}\nIf it did not open, use: ${fallback}`,
+						{ dim: false },
+					);
+					return;
+				}
+				runtime.ctx.showStatus(`Canvas opened in ${host.kind}: ${shortenPath(scenePath)}`);
+			} catch (error) {
+				runtime.ctx.showWarning(`Failed to open canvas: ${errorMessage(error)}`);
+			}
 		},
 	},
 	{

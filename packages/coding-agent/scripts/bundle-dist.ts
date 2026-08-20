@@ -81,6 +81,7 @@ async function cleanBundleOutputs(): Promise<void> {
 async function main(): Promise<void> {
 	const start = Bun.nanoseconds();
 	await cleanBundleOutputs();
+	await runCommand(["bun", "run", "gen:canvas"]);
 	// The npm bundle ships no stats dashboard sources, so embed the dashboard
 	// archive the same way compiled binaries do (scripts/build-binary.ts). Reset
 	// afterwards to keep the checked-in placeholder empty.

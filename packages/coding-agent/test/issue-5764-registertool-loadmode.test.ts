@@ -33,11 +33,14 @@ const emptySchema = type({});
 const noopExecute = async () => ({ content: [{ type: "text" as const, text: "" }] });
 
 describe("issue #5764: registerTool loadMode default", () => {
-	it("never mounts the read/write transport tools under xdev, even when mislabeled discoverable", () => {
+	it("keeps transport and session-scoped tools top-level even when labeled discoverable", () => {
 		// A UI-only re-register could carry loadMode "discoverable"; the transport
 		// invariant must still keep read/write top-level.
 		expect(isMountableUnderXdev({ name: "read", loadMode: "discoverable" })).toBe(false);
 		expect(isMountableUnderXdev({ name: "write", loadMode: "discoverable" })).toBe(false);
+		// Canvas state belongs to a particular OMP artifact directory. Mounting it
+		// as xd://canvas makes separate sessions contend for one global device.
+		expect(isMountableUnderXdev({ name: "canvas", loadMode: "discoverable" })).toBe(false);
 		// A genuinely discoverable tool still mounts.
 		expect(isMountableUnderXdev({ name: "lsp", loadMode: "discoverable" })).toBe(true);
 	});
