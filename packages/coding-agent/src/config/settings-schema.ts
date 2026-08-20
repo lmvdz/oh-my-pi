@@ -412,37 +412,73 @@ export const SETTINGS_SCHEMA = {
 	"quotaRouter.enabled": {
 		type: "boolean",
 		default: false,
-		ui: { tab: "providers", group: "Quota Router", label: "Enable Quota Router", description: "Auto-start the quota-router sidecar (broker → mux gateway → Switchyard) on interactive `omp` boot" },
+		ui: {
+			tab: "providers",
+			group: "Quota Router",
+			label: "Enable Quota Router",
+			description:
+				"Auto-start the quota-router sidecar (broker → mux gateway → Switchyard) on interactive `omp` boot",
+		},
 	},
 	"quotaRouter.broker": {
 		type: "boolean",
 		default: true,
-		ui: { tab: "providers", group: "Quota Router", label: "Start Broker", description: "Start the auth broker alongside the gateway" },
+		ui: {
+			tab: "providers",
+			group: "Quota Router",
+			label: "Start Broker",
+			description: "Start the auth broker alongside the gateway",
+		},
 	},
 	"quotaRouter.gateway": {
 		type: "boolean",
 		default: true,
-		ui: { tab: "providers", group: "Quota Router", label: "Start Gateway", description: "Start the mux auth gateway" },
+		ui: {
+			tab: "providers",
+			group: "Quota Router",
+			label: "Start Gateway",
+			description: "Start the mux auth gateway",
+		},
 	},
 	"quotaRouter.switchyard": {
 		type: "boolean",
 		default: true,
-		ui: { tab: "providers", group: "Quota Router", label: "Start Switchyard", description: "Start the Switchyard routing proxy in front of the gateway" },
+		ui: {
+			tab: "providers",
+			group: "Quota Router",
+			label: "Start Switchyard",
+			description: "Start the Switchyard routing proxy in front of the gateway",
+		},
 	},
 	"quotaRouter.root": {
 		type: "string",
 		default: undefined,
-		ui: { tab: "providers", group: "Quota Router", label: "Project Root", description: "Path to the omp-quota-router project root (contains deploy/quota-router/start.sh)" },
+		ui: {
+			tab: "providers",
+			group: "Quota Router",
+			label: "Project Root",
+			description: "Path to the omp-quota-router project root (contains deploy/quota-router/start.sh)",
+		},
 	},
 	"quotaRouter.gatewayBind": {
 		type: "string",
 		default: "127.0.0.1:4010",
-		ui: { tab: "providers", group: "Quota Router", label: "Gateway Bind", description: "Host:port for the mux auth gateway" },
+		ui: {
+			tab: "providers",
+			group: "Quota Router",
+			label: "Gateway Bind",
+			description: "Host:port for the mux auth gateway",
+		},
 	},
 	"quotaRouter.switchyardBind": {
 		type: "string",
 		default: "127.0.0.1:4001",
-		ui: { tab: "providers", group: "Quota Router", label: "Switchyard Bind", description: "Host:port for the Switchyard routing proxy" },
+		ui: {
+			tab: "providers",
+			group: "Quota Router",
+			label: "Switchyard Bind",
+			description: "Host:port for the Switchyard routing proxy",
+		},
 	},
 	"quotaRouter.brokerUrl": {
 		type: "string",
@@ -452,12 +488,32 @@ export const SETTINGS_SCHEMA = {
 	"quotaRouter.muxCheap": {
 		type: "string",
 		default: "openrouter/deepseek/deepseek-v4-flash",
-		ui: { tab: "providers", group: "Quota Router", label: "Mux Cheap Model", description: "Provider/model for the mux/cheap lane (e.g. openrouter/deepseek/deepseek-v4-flash)" },
+		ui: {
+			tab: "providers",
+			group: "Quota Router",
+			label: "Mux Cheap Model",
+			description: "Provider/model for the mux/cheap lane (e.g. openrouter/deepseek/deepseek-v4-flash)",
+		},
 	},
 	"quotaRouter.muxCapable": {
 		type: "string",
 		default: "anthropic/claude-opus-5,openai-codex/gpt-5.6-sol,xai-oauth/grok-4.6",
-		ui: { tab: "providers", group: "Quota Router", label: "Mux Capable Models", description: "Comma-separated provider/model list for the mux/capable lane, tried in order" },
+		ui: {
+			tab: "providers",
+			group: "Quota Router",
+			label: "Mux Capable Models",
+			description: "Comma-separated provider/model list for the mux/capable lane, tried in order",
+		},
+	},
+	"quotaRouter.muxVision": {
+		type: "string",
+		default: "openrouter/qwen/qwen3.8-27b",
+		ui: {
+			tab: "providers",
+			group: "Quota Router",
+			label: "Mux Vision Models",
+			description: "Comma-separated image-capable provider/model list for image-bearing requests",
+		},
 	},
 
 	autoResume: {
@@ -925,6 +981,17 @@ export const SETTINGS_SCHEMA = {
 			label: "Describe Images for Text Models",
 			description:
 				"When an image is attached to a model without vision support, save it under local:// and inject a description from a vision-capable model instead of dropping it",
+		},
+	},
+	"images.describeForVisionModels": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Vision",
+			label: "Use Vision Sidecar for Attachments",
+			description:
+				"Analyze attached images in an isolated vision request, then give the parent model the saved local:// reference and description instead of image pixels",
 		},
 	},
 
@@ -5978,6 +6045,7 @@ export interface QuotaRouterSettings {
 	brokerUrl: string;
 	muxCheap: string;
 	muxCapable: string;
+	muxVision: string;
 }
 
 export interface SecondThoughtSettings {

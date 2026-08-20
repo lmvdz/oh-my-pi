@@ -91,12 +91,19 @@ providers:
     models:
       - id: cheap
         name: Quota mux (cheap / Flash)
+        input: [text, image]
         contextWindow: 1000000
         maxTokens: 32000
       - id: capable
         name: Quota mux (capable / sub seat)
+        input: [text, image]
         contextWindow: 1000000
         maxTokens: 128000
+      - id: vision
+        name: Quota mux (vision)
+        input: [text, image]
+        contextWindow: 262144
+        maxTokens: 131072
   switchyard:
     baseUrl: http://${SWITCHYARD_BIND}/v1
     api: openai-completions
@@ -105,10 +112,12 @@ providers:
     models:
       - id: fleet
         name: Switchyard fleet (cheap-first)
+        input: [text, image]
         contextWindow: 1000000
         maxTokens: 32000
       - id: ship
         name: Switchyard ship (escalate)
+        input: [text, image]
         contextWindow: 1000000
         maxTokens: 128000
 EOF

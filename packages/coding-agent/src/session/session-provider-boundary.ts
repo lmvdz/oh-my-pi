@@ -208,7 +208,7 @@ export class SessionProviderBoundary {
 		return normalizeModelContextImages(images, { model: this.#host.model() });
 	}
 
-	/** Builds a hidden vision-model description for attachments sent to a text-only model. */
+	/** Builds a hidden, isolated vision-model description for an attachment. */
 	async buildImageDescriptionNotice(
 		normalizedImages: ImageContent[],
 		signal?: AbortSignal,
@@ -216,9 +216,10 @@ export class SessionProviderBoundary {
 		const model = this.#host.model();
 		const shouldDescribe =
 			!!model &&
-			!model.input.includes("image") &&
 			!this.#host.settings.get("images.blockImages") &&
-			this.#host.settings.get("images.describeForTextModels");
+			(!model.input.includes("image")
+				? this.#host.settings.get("images.describeForTextModels")
+				: this.#host.settings.get("images.describeForVisionModels"));
 		if (!shouldDescribe || !model) return undefined;
 
 		let blocks: TextContent[];

@@ -18,7 +18,7 @@ import {
 	instrumentedCompleteSimple,
 	resolveTelemetry,
 } from "@oh-my-pi/pi-agent-core";
-import type { Api, completeSimple, ImageContent, Model, TextContent } from "@oh-my-pi/pi-ai";
+import type { Api, completeSimple, ImageContent, Message, Model, TextContent } from "@oh-my-pi/pi-ai";
 import { logger, prompt, toError } from "@oh-my-pi/pi-utils";
 import { extractTextContent } from "../commit/utils";
 import type { ModelRegistry } from "../config/model-registry";
@@ -179,6 +179,17 @@ export async function describeAttachedImagesForTextModel(
 	const apiKey = visionModel ? await deps.modelRegistry.getApiKey(visionModel, deps.sessionId) : undefined;
 	const canDescribe = Boolean(visionModel && apiKey);
 	const telemetry = resolveTelemetry(deps.telemetryConfig, deps.sessionId);
+	if (visionModel && canDescribe) {
+		logger.info("image attachment vision sidecar selected", {
+			model: `${visionModel.provider}/${visionModel.id}`,
+			imageCount: images.length,
+		});
+	} else {
+		logger.warn("image attachment vision sidecar unavailable", {
+			reason: visionModel ? "missing-api-key" : "no-image-capable-model",
+			imageCount: images.length,
+		});
+	}
 
 	return Promise.all(
 		images.map(async (image): Promise<TextContent> => {
@@ -193,4 +204,30 @@ export async function describeAttachedImagesForTextModel(
 			return { type: "text", text: formatImageBlock(localUrl, description) };
 		}),
 	);
+}
+
+/**
+ * Replace images returned by tools with isolated vision descriptions. Direct
+ * attachments already receive a persisted companion description before they
+ * enter the context; tool results do not, so this closes that boundary without
+ * re-describing historical user images on every provider request.
+ */
+export async function describeLlmToolResultImages(
+	messages: Message[],
+	deps: DescribeAttachedImagesDeps,
+	signal?: AbortSignal,
+): Promise<Message[]> {
+	let result: Message[] | undefined;
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index];
+		if (message.role !== "toolResult" || !Array.isArray(message.content)) continue;
+		const images = message.content.filter((part): part is ImageContent => part.type === "image");
+		if (images.length === 0) continue;
+		const descriptions = await describeAttachedImagesForTextModel(images, deps, signal);
+		let descriptionIndex = 0;
+		const content = message.content.map(part => (part.type === "image" ? descriptions[descriptionIndex++]! : part));
+		if (result === undefined) result = messages.slice();
+		result[index] = { ...message, content };
+	}
+	return result ?? messages;
 }

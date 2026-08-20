@@ -8,8 +8,8 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import * as path from "node:path";
 import { homedir } from "node:os";
+import * as path from "node:path";
 
 export interface QuotaRouterConfig {
 	enabled: boolean;
@@ -22,6 +22,7 @@ export interface QuotaRouterConfig {
 	brokerUrl: string;
 	muxCheap: string;
 	muxCapable: string;
+	muxVision: string;
 }
 
 export interface EnsureQuotaRouterResult {
@@ -40,6 +41,7 @@ export const DEFAULT_QUOTA_ROUTER: Omit<QuotaRouterConfig, "enabled"> = {
 	brokerUrl: "http://127.0.0.1:8765",
 	muxCheap: "openrouter/deepseek/deepseek-v4-flash",
 	muxCapable: "anthropic/claude-opus-5,openai-codex/gpt-5.6-sol,xai-oauth/grok-4.6",
+	muxVision: "openrouter/qwen/qwen3.8-27b",
 };
 
 export function parseQuotaRouterSettings(raw: unknown): QuotaRouterConfig {
@@ -69,6 +71,10 @@ export function parseQuotaRouterSettings(raw: unknown): QuotaRouterConfig {
 			typeof rec.muxCapable === "string" && rec.muxCapable.trim()
 				? rec.muxCapable.trim()
 				: DEFAULT_QUOTA_ROUTER.muxCapable,
+		muxVision:
+			typeof rec.muxVision === "string" && rec.muxVision.trim()
+				? rec.muxVision.trim()
+				: DEFAULT_QUOTA_ROUTER.muxVision,
 	};
 }
 
@@ -89,6 +95,7 @@ export function applyQuotaRouterEnv(cfg: QuotaRouterConfig): void {
 	}
 	if (cfg.muxCheap) process.env.OMP_MUX_CHEAP = cfg.muxCheap;
 	if (cfg.muxCapable) process.env.OMP_MUX_CAPABLE = cfg.muxCapable;
+	if (cfg.muxVision) process.env.OMP_MUX_VISION = cfg.muxVision;
 	const tokenFile = gatewayTokenPath();
 	if (process.env.OMP_AUTH_GATEWAY_TOKEN) return;
 	try {
@@ -112,7 +119,9 @@ export async function httpOk(url: string, timeoutMs = 800): Promise<boolean> {
 	}
 }
 
-export async function stackHealth(cfg: QuotaRouterConfig): Promise<{ broker: boolean; gateway: boolean; switchyard: boolean }> {
+export async function stackHealth(
+	cfg: QuotaRouterConfig,
+): Promise<{ broker: boolean; gateway: boolean; switchyard: boolean }> {
 	const broker = cfg.broker ? await httpOk(`${cfg.brokerUrl.replace(/\/$/, "")}/v1/healthz`) : true;
 	const gateway = cfg.gateway ? await httpOk(`http://${cfg.gatewayBind}/healthz`) : true;
 	const switchyard = cfg.switchyard ? await httpOk(`http://${cfg.switchyardBind}/health`) : true;

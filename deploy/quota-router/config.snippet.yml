@@ -28,3 +28,7 @@ retry:
 # Keep ST default-off until a Max-bound session is confirmed.
 # secondThought:
 #   enabled: true
+
+# Image-bearing requests bypass mux/cheap and are resolved through mux/vision.
+quotaRouter:
+  muxVision: openrouter/qwen/qwen3.8-27b

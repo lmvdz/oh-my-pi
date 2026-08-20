@@ -4,8 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
 import {
-	decideMuxLane,
 	DEFAULT_MUX_POLICY,
+	decideMuxLane,
 	loadMuxPolicyFromEnv,
 	MuxRuntime,
 	parseCapableOrder,
@@ -27,7 +27,10 @@ function limit(partial: {
 	return {
 		id: partial.id,
 		label: partial.id,
-		scope: { provider: (partial.provider ?? "anthropic") as UsageLimit["scope"]["provider"], windowId: partial.windowId },
+		scope: {
+			provider: (partial.provider ?? "anthropic") as UsageLimit["scope"]["provider"],
+			windowId: partial.windowId,
+		},
 		window: { id: partial.windowId, label: partial.windowId },
 		amount: { usedFraction: partial.usedFraction, unit: "percent" },
 		status: partial.status ?? "ok",
@@ -42,6 +45,7 @@ describe("mux policy parse", () => {
 	it("recognizes virtual model ids", () => {
 		expect(parseMuxLane("mux/cheap")).toBe("cheap");
 		expect(parseMuxLane("mux/capable")).toBe("capable");
+		expect(parseMuxLane("mux/vision")).toBe("vision");
 		expect(parseMuxLane("cheap")).toBe("cheap");
 		expect(parseMuxLane("quota/cheap")).toBe("cheap");
 		expect(parseMuxLane("anthropic/claude-opus-5")).toBeUndefined();
@@ -136,7 +140,9 @@ describe("mux seat + decide", () => {
 
 	it("overflows to cheap when every capable seat is closed", () => {
 		const reports = policy.capableOrder.map(target =>
-			report(target.provider, [limit({ id: `${target.provider}:7d`, windowId: "7d", usedFraction: 0.99, provider: target.provider })]),
+			report(target.provider, [
+				limit({ id: `${target.provider}:7d`, windowId: "7d", usedFraction: 0.99, provider: target.provider }),
+			]),
 		);
 		const decision = decideMuxLane("capable", reports, policy);
 		expect(decision.ok).toBe(true);
@@ -148,7 +154,9 @@ describe("mux seat + decide", () => {
 
 	it("returns 503 when capable closed and cheap credits exhausted", () => {
 		const closedSeats = policy.capableOrder.map(target =>
-			report(target.provider, [limit({ id: `${target.provider}:7d`, windowId: "7d", usedFraction: 0.99, provider: target.provider })]),
+			report(target.provider, [
+				limit({ id: `${target.provider}:7d`, windowId: "7d", usedFraction: 0.99, provider: target.provider }),
+			]),
 		);
 		const noCredits = report("openrouter", [
 			{
@@ -217,6 +225,69 @@ describe("mux seat + decide", () => {
 });
 
 describe("auth-gateway mux wire", () => {
+	it("routes an image request from the cheap virtual lane only to a vision target", async () => {
+		registerMockApi();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-mux-vision-"));
+		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
+		storage.setRuntimeApiKey("mock", "test-key");
+		const flash = createMockModel({
+			provider: "mock",
+			id: "flash",
+			handler: () => ({ content: ["flash-should-not-run"] }),
+		});
+		const vision = createMockModel({
+			provider: "mock",
+			id: "vision",
+			handler: () => ({ content: ["vision-ok"] }),
+		});
+		Object.defineProperty(vision, "input", { value: ["text", "image"] });
+		const handle = startAuthGateway({
+			bind: "127.0.0.1:0",
+			bearerTokens: ["t"],
+			storage,
+			mux: new MuxRuntime({
+				weeklyCloseAt: 0.7,
+				fiveHourCloseAt: 0.6,
+				cheap: { provider: "mock", id: "flash" },
+				capableOrder: [],
+				visionOrder: [{ provider: "mock", id: "vision" }],
+			}),
+			resolveModel: id => {
+				if (id === "mock/flash" || id === "flash") return flash.model;
+				if (id === "mock/vision" || id === "vision") return vision.model;
+				return undefined;
+			},
+			version: "test",
+		});
+		try {
+			const res = await fetch(`${handle.url}/v1/chat/completions`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				body: JSON.stringify({
+					model: "mux/cheap",
+					messages: [
+						{
+							role: "user",
+							content: [
+								{ type: "text", text: "What is in this image?" },
+								{ type: "image_url", image_url: { url: "data:image/png;base64,aQ==" } },
+							],
+						},
+					],
+					stream: false,
+				}),
+			});
+			expect(res.status).toBe(200);
+			expect(res.headers.get("x-omp-mux-lane")).toBe("vision");
+			expect(res.headers.get("x-omp-mux-target")).toBe("mock/vision");
+			expect(flash.calls).toHaveLength(0);
+			expect(vision.calls).toHaveLength(1);
+		} finally {
+			await handle.close();
+			storage.close();
+		}
+	});
+
 	it("rewrites mux/cheap onto the configured cheap model", async () => {
 		registerMockApi();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-mux-"));

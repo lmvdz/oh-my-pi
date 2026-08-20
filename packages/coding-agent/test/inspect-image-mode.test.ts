@@ -30,8 +30,12 @@ function activeFor(
 }
 
 describe("isInspectImageToolActive", () => {
-	test("auto hides the tool for image-capable models", () => {
-		expect(activeFor({}, visionModel)).toBe(false);
+	test("auto exposes the tool when image-capable models use the isolated vision sidecar", () => {
+		expect(activeFor({}, visionModel)).toBe(true);
+	});
+
+	test("auto hides the tool for direct image-capable models", () => {
+		expect(activeFor({ "images.describeForVisionModels": false }, visionModel)).toBe(false);
 	});
 
 	test("auto exposes the tool for text-only models", () => {

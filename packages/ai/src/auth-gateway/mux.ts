@@ -11,12 +11,30 @@
 
 import { resolveUsedFraction, type UsageLimit, type UsageReport } from "../usage";
 
-export type MuxLane = "cheap" | "capable";
+export type MuxLane = "cheap" | "capable" | "vision";
 
 export interface MuxTarget {
 	provider: string;
 	id: string;
 }
+
+/** A caller-supplied capability check for a concrete mux target. */
+export type MuxTargetPredicate = (target: MuxTarget) => boolean;
+
+export type MuxDecision =
+	| {
+			ok: true;
+			lane: MuxLane;
+			target: MuxTarget;
+			sticky: boolean;
+			reason: string;
+	  }
+	| {
+			ok: false;
+			lane: MuxLane;
+			reason: string;
+			seats: MuxSeatStatus[];
+	  };
 
 export interface MuxPolicy {
 	weeklyCloseAt: number;
@@ -32,6 +50,8 @@ export interface MuxPolicy {
 	cheapMaxOutputTokens?: number;
 	cheap: MuxTarget;
 	capableOrder: MuxTarget[];
+	/** Targets reserved for image-bearing requests. */
+	visionOrder?: MuxTarget[];
 }
 
 export type MuxCloseReason = "five-hour" | "weekly" | "exhausted" | "unknown" | "credits";
@@ -57,15 +77,18 @@ export const DEFAULT_MUX_POLICY: MuxPolicy = {
 		{ provider: "openai-codex", id: "gpt-5.6-sol" },
 		{ provider: "xai-oauth", id: "grok-4.6" },
 	],
+	visionOrder: [{ provider: "openrouter", id: "qwen/qwen3.8-27b" }],
 };
 
 export const MUX_CHEAP_ID = "mux/cheap";
 export const MUX_CAPABLE_ID = "mux/capable";
+export const MUX_VISION_ID = "mux/vision";
 
 /** Parse `mux/cheap` / `mux/capable` (also bare `cheap` / `capable`). */
 export function parseMuxLane(modelId: string): MuxLane | undefined {
 	if (modelId === MUX_CHEAP_ID || modelId === "quota/cheap" || modelId === "cheap") return "cheap";
 	if (modelId === MUX_CAPABLE_ID || modelId === "quota/capable" || modelId === "capable") return "capable";
+	if (modelId === MUX_VISION_ID || modelId === "quota/vision" || modelId === "vision") return "vision";
 	return undefined;
 }
 
@@ -94,6 +117,7 @@ export function parseCapableOrder(spec: string): MuxTarget[] {
  * - `OMP_MUX_CHEAP_MIN_USD` — close cheap at or below this remaining USD
  * - `OMP_MUX_CHEAP` — `provider/model` (model may contain slashes)
  * - `OMP_MUX_CAPABLE` — comma-separated `provider/model` list
+ * - `OMP_MUX_VISION` — comma-separated image-capable `provider/model` list
  */
 export function loadMuxPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): MuxPolicy {
 	const weekly = parseUnitInterval(env.OMP_MUX_WEEKLY_CLOSE, DEFAULT_MUX_POLICY.weeklyCloseAt);
@@ -101,9 +125,9 @@ export function loadMuxPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): MuxP
 	const cheapMinUsd = parseNonNegative(env.OMP_MUX_CHEAP_MIN_USD, DEFAULT_MUX_POLICY.cheapMinUsd);
 	const cheapCap = parsePositiveInt(env.OMP_MUX_CHEAP_MAX_OUTPUT_TOKENS, DEFAULT_MUX_POLICY.cheapMaxOutputTokens);
 	const cheap = (env.OMP_MUX_CHEAP ? parseMuxTarget(env.OMP_MUX_CHEAP) : undefined) ?? DEFAULT_MUX_POLICY.cheap;
-	const capableOrder = env.OMP_MUX_CAPABLE
-		? parseCapableOrder(env.OMP_MUX_CAPABLE)
-		: DEFAULT_MUX_POLICY.capableOrder;
+	const capableOrder = env.OMP_MUX_CAPABLE ? parseCapableOrder(env.OMP_MUX_CAPABLE) : DEFAULT_MUX_POLICY.capableOrder;
+	const defaultVisionOrder = DEFAULT_MUX_POLICY.visionOrder ?? [];
+	const visionOrder = env.OMP_MUX_VISION ? parseCapableOrder(env.OMP_MUX_VISION) : defaultVisionOrder;
 	return {
 		weeklyCloseAt: weekly,
 		fiveHourCloseAt: fiveHour,
@@ -111,6 +135,7 @@ export function loadMuxPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): MuxP
 		cheapMaxOutputTokens: cheapCap,
 		cheap,
 		capableOrder: capableOrder.length > 0 ? capableOrder : DEFAULT_MUX_POLICY.capableOrder,
+		visionOrder: visionOrder.length > 0 ? visionOrder : defaultVisionOrder,
 	};
 }
 
@@ -218,8 +243,17 @@ export function decideMuxLane(
 	reports: UsageReport[],
 	policy: MuxPolicy,
 	sticky?: MuxTarget,
+	targetAllowed: MuxTargetPredicate = () => true,
 ): MuxDecision {
 	if (lane === "cheap") {
+		if (!targetAllowed(policy.cheap)) {
+			return {
+				ok: false,
+				lane,
+				reason: "required-capability-unavailable",
+				seats: [{ target: policy.cheap, open: false, reason: "unknown" }],
+			};
+		}
 		const credit = cheapCreditSnapshot(reports, policy);
 		if (!credit.open) {
 			return {
@@ -238,7 +272,11 @@ export function decideMuxLane(
 		return { ok: true, lane, target: policy.cheap, sticky: false, reason: credit.reason ?? "cheap-fixed" };
 	}
 
-	const seats = policy.capableOrder.map(target => seatStatus(target, reports, policy));
+	const targetOrder = lane === "vision" ? (policy.visionOrder ?? []) : policy.capableOrder;
+	const seats = targetOrder.filter(targetAllowed).map(target => seatStatus(target, reports, policy));
+	if (seats.length === 0) {
+		return { ok: false, lane, reason: "required-capability-unavailable", seats };
+	}
 
 	if (sticky) {
 		const current = seats.find(seat => muxTargetKey(seat.target) === muxTargetKey(sticky));
@@ -256,7 +294,7 @@ export function decideMuxLane(
 		// escalates to mux/capable on each hard task with no memory that capable
 		// just failed, so a hard 503 makes it re-escalate every turn. Serving cheap
 		// here lets the request complete and records the overflow in the reason.
-		if (cheapCreditSnapshot(reports, policy).open) {
+		if (lane === "capable" && targetAllowed(policy.cheap) && cheapCreditSnapshot(reports, policy).open) {
 			return { ok: true, lane, target: policy.cheap, sticky: false, reason: "capable-overflow" };
 		}
 		return { ok: false, lane, reason: "all-capable-seats-closed", seats };
@@ -279,10 +317,15 @@ export class MuxRuntime {
 		this.policy = policy;
 	}
 
-	resolve(lane: MuxLane, reports: UsageReport[], sessionKey?: string): MuxDecision {
-		const sticky = lane === "capable" && sessionKey ? this.#sticky.get(sessionKey) : undefined;
-		const decision = decideMuxLane(lane, reports, this.policy, sticky);
-		if (decision.ok && lane === "capable" && sessionKey && decision.reason !== "capable-overflow") {
+	resolve(
+		lane: MuxLane,
+		reports: UsageReport[],
+		sessionKey?: string,
+		targetAllowed?: MuxTargetPredicate,
+	): MuxDecision {
+		const sticky = lane !== "cheap" && sessionKey ? this.#sticky.get(sessionKey) : undefined;
+		const decision = decideMuxLane(lane, reports, this.policy, sticky, targetAllowed);
+		if (decision.ok && lane !== "cheap" && sessionKey && decision.reason !== "capable-overflow") {
 			this.#sticky.set(sessionKey, decision.target);
 		}
 		// Overflow served cheap under the "capable" lane — don't let that become a

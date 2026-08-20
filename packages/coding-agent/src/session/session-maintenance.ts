@@ -108,6 +108,23 @@ const COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION: CompactionCheckResult = {
 };
 
 /**
+ * Snapcompact archives are replayed as image frames on subsequent main-model
+ * requests. A routed proxy's declared input capability is insufficient here:
+ * the proxy may select a text-only downstream model after compaction. The
+ * isolated vision-sidecar policy also strips images from the main request, so
+ * it cannot replay snapcompact's frames. Keep the archive textual unless the
+ * active model is a direct vision-capable target that receives images itself.
+ */
+function canReplaySnapcompactFrames(model: Model, settings: Settings): boolean {
+	return (
+		model.input.includes("image") &&
+		model.provider !== "mux" &&
+		model.provider !== "switchyard" &&
+		!settings.get("images.describeForVisionModels")
+	);
+}
+
+/**
  * User-facing notice for a compaction dead end: maintenance freed too little
  * to retry safely. `remedies` names the recovery actions left on the emitting
  * path — by the time the post-pass dead end fires, the tiered rescue has
@@ -694,18 +711,27 @@ export class SessionMaintenance {
 			// text into every later request; drop `¶think:` sections for
 			// Anthropic-dialect targets (issue #6093).
 			const snapcompactIncludeThinking = preferredDialect(this.#model.id) !== "anthropic";
-			if (wantsSnapcompact && !this.#model.input.includes("image")) {
+			if (wantsSnapcompact && !canReplaySnapcompactFrames(this.#model, this.#host.settings)) {
+				const directVisionModel = this.#model.input.includes("image");
+				const imageSidecar = directVisionModel && this.#host.settings.get("images.describeForVisionModels");
+				const routedProxy = directVisionModel && !imageSidecar;
+				const unsupportedReason = imageSidecar
+					? "isolated vision sidecar is enabled"
+					: routedProxy
+						? `${this.#model.provider}/${this.#model.id} is a routed proxy`
+						: `${this.#model.id} is text-only`;
+				const capability = imageSidecar || routedProxy ? "direct vision-capable" : "vision-capable";
 				if (explicitSnapcompact) {
 					this.#host.emitNotice(
 						"warning",
-						`snapcompact needs a vision-capable model (${this.#model.id} is text-only)`,
+						`snapcompact needs a ${capability} model (${unsupportedReason})`,
 						"compaction",
 					);
-					throw new Error(`snapcompact cannot run locally: ${this.#model.id} is text-only.`);
+					throw new Error(`snapcompact cannot run locally: ${unsupportedReason}.`);
 				}
 				this.#host.emitNotice(
 					"warning",
-					`snapcompact needs a vision-capable model (${this.#model.id} is text-only); falling back to LLM compaction`,
+					`snapcompact needs a ${capability} model (${unsupportedReason}); falling back to LLM compaction`,
 					"compaction",
 				);
 				snapcompactReady = false;

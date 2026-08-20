@@ -23,6 +23,7 @@ switchyard-server :4001
         ▼
 omp auth-gateway :4010
   mux/cheap    → openrouter/deepseek/deepseek-v4-flash
+  mux/vision   → openrouter/qwen/qwen3.8-27b (image-bearing requests)
   mux/capable  → anthropic → openai-codex → xai-oauth
                  (close a seat at 70% weekly / 60% 5-hour)
 ```
@@ -106,6 +107,7 @@ Env for the mux (read by `loadMuxPolicyFromEnv` when the gateway starts):
 | `OMP_MUX_CHEAP_MIN_USD` | `0.05` |
 | `OMP_MUX_CHEAP` | `openrouter/deepseek/deepseek-v4-flash` |
 | `OMP_MUX_CAPABLE` | `anthropic/claude-opus-5,openai-codex/gpt-5.6-sol,xai-oauth/grok-4.6` |
+| `OMP_MUX_VISION` | `openrouter/qwen/qwen3.8-27b` |
 
 `GET /v1/mux` (gateway bearer) shows the live policy, OpenRouter remaining
 USD on `cheap`, and each capable seat. A $0 OpenRouter balance used to

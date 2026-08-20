@@ -1340,6 +1340,7 @@ export async function runRootCommand(
 			brokerUrl: settingsInstance.get("quotaRouter.brokerUrl"),
 			muxCheap: settingsInstance.get("quotaRouter.muxCheap"),
 			muxCapable: settingsInstance.get("quotaRouter.muxCapable"),
+			muxVision: settingsInstance.get("quotaRouter.muxVision"),
 		});
 		const ensured = await logger.time("quotaRouter:ensure", () => ensureQuotaRouter(qr));
 		if (ensured.ok) {

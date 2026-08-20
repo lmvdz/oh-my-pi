@@ -223,6 +223,7 @@ import { ttsTool } from "./tools/tts";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
 import { normalizeProviderContextImagesForModel } from "./utils/image-loading";
+import { describeLlmToolResultImages } from "./utils/image-vision-fallback";
 import { formatLocalCalendarDate } from "./utils/local-date";
 import { normalizePromptPath } from "./utils/prompt-path";
 import { buildNamedToolChoice } from "./utils/tool-choice";
@@ -3110,6 +3111,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					"[image omitted: the active model does not support image input]",
 				);
 			}
+			if (activeModel && settings.get("images.describeForVisionModels")) {
+				return replaceLlmImagesWithText(converted, "[image replaced by isolated vision analysis]", {
+					roles: ["user", "developer"],
+				});
+			}
 			return converted;
 		};
 
@@ -3148,6 +3154,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (snapcompactInline) transformed = await snapcompactInline.transform(transformed, transformModel);
 			transformed = clampProviderContextImages(transformed, transformModel);
 			transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+			if (settings.get("images.describeForVisionModels")) {
+				const messages = await describeLlmToolResultImages(transformed.messages, {
+					activeModel: transformModel,
+					modelRegistry,
+					settings,
+					localProtocolOptions,
+					activeModelString: formatModelString(transformModel),
+					telemetryConfig: agent.telemetry,
+					sessionId: sessionManager.getSessionId(),
+				});
+				transformed = messages === transformed.messages ? transformed : { ...transformed, messages };
+			}
 			// Keep per-request volatility out of the system prompt: the date/cwd
 			// reminder rides on the first user turn so open-weight providers keep
 			// their tool-schema prefix cache (#7404).

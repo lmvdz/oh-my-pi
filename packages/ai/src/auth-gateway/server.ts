@@ -44,13 +44,13 @@ import {
 } from "./http";
 import {
 	catalogIdsFor,
+	cheapCreditSnapshot,
+	DEFAULT_MUX_POLICY,
 	loadMuxPolicyFromEnv,
+	type MuxDecision,
 	MuxRuntime,
 	muxTargetKey,
 	parseMuxLane,
-	type MuxDecision,
-	cheapCreditSnapshot,
-	DEFAULT_MUX_POLICY,
 	seatStatus,
 } from "./mux";
 import type {
@@ -147,10 +147,29 @@ interface ResolvedGatewayModel {
 	mux?: MuxDecision & { ok: true };
 }
 
+function contextRequiresImage(context: Context): boolean {
+	return context.messages.some(message => {
+		if (!Array.isArray(message.content)) return false;
+		return message.content.some(block => block.type === "image");
+	});
+}
+
+function resolveMuxTargetModel(
+	bootOpts: AuthGatewayBootOptions,
+	target: { provider: string; id: string },
+): Model<Api> | undefined {
+	for (const id of catalogIdsFor(target)) {
+		const model = bootOpts.resolveModel(id);
+		if (model) return model;
+	}
+	return undefined;
+}
+
 async function resolveGatewayModel(
 	bootOpts: AuthGatewayBootOptions,
 	requestedId: string,
 	sessionKey: string,
+	requiresImage: boolean,
 	signal: AbortSignal,
 	formatError: (status: number, type: string, message: string) => Response,
 ): Promise<ResolvedGatewayModel | Response> {
@@ -159,31 +178,39 @@ async function resolveGatewayModel(
 	if (!lane || !mux) {
 		const model = bootOpts.resolveModel(requestedId);
 		if (!model) return formatError(404, "invalid_request_error", `Unknown model: ${requestedId}`);
+		if (requiresImage && !model.input.includes("image")) {
+			return formatError(400, "invalid_request_error", `Model ${requestedId} does not support image input`);
+		}
 		return { model };
 	}
 
 	const reports = (await bootOpts.storage.fetchUsageReports?.({ signal })) ?? [];
-	const decision = mux.resolve(lane, reports, sessionKey);
+	// A virtual cheap lane can accept a vision request, but must resolve it through
+	// the capable lane. This also protects Switchyard routes which selected cheap
+	// before inspecting the request body.
+	const effectiveLane = requiresImage ? "vision" : lane;
+	const decision = mux.resolve(effectiveLane, reports, sessionKey, target => {
+		const model = resolveMuxTargetModel(bootOpts, target);
+		return !requiresImage || model?.input.includes("image") === true;
+	});
 	if (!decision.ok) {
 		const seats = decision.seats
 			.map(seat => `${muxTargetKey(seat.target)}:${seat.reason ?? (seat.open ? "open" : "closed")}`)
 			.join(",");
 		const hint =
-			decision.reason === "cheap-credits-exhausted"
-				? "Add OpenRouter credits, then retry."
-				: "Spill to OpenRouter Flash or wait for a reset.";
+			decision.reason === "required-capability-unavailable"
+				? "Configure at least one image-capable mux/capable target, then retry."
+				: decision.reason === "cheap-credits-exhausted"
+					? "Add OpenRouter credits, then retry."
+					: "Spill to OpenRouter Flash or wait for a reset.";
 		return formatError(
 			503,
 			"usage_limit_reached",
-			`mux/${lane} has no open seat (${decision.reason}${seats ? `; ${seats}` : ""}). ${hint}`,
+			`mux/${effectiveLane} has no open seat (${decision.reason}${seats ? `; ${seats}` : ""}). ${hint}`,
 		);
 	}
 
-	let model: Model<Api> | undefined;
-	for (const id of catalogIdsFor(decision.target)) {
-		model = bootOpts.resolveModel(id);
-		if (model) break;
-	}
+	const model = resolveMuxTargetModel(bootOpts, decision.target);
 	if (!model) {
 		return formatError(
 			404,
@@ -193,6 +220,7 @@ async function resolveGatewayModel(
 	}
 	logger.info("auth-gateway mux pick", {
 		lane,
+		effectiveLane,
 		target: muxTargetKey(decision.target),
 		reason: decision.reason,
 		sticky: decision.sticky,
@@ -542,6 +570,7 @@ async function handleFormatEndpoint(
 		bootOpts,
 		modelId,
 		sessionId,
+		contextRequiresImage(parsed.context),
 		controller.signal,
 		(status, type, message) => route.module.formatError(status, type, message),
 	);
@@ -582,9 +611,7 @@ async function handleFormatEndpoint(
 	if (mux && (mux.lane === "cheap" || mux.reason === "capable-overflow")) {
 		const cap = bootOpts.mux?.policy.cheapMaxOutputTokens ?? DEFAULT_MUX_POLICY.cheapMaxOutputTokens;
 		if (cap !== undefined) {
-			streamOpts.maxTokens = streamOpts.maxTokens === undefined
-				? cap
-				: Math.min(streamOpts.maxTokens, cap);
+			streamOpts.maxTokens = streamOpts.maxTokens === undefined ? cap : Math.min(streamOpts.maxTokens, cap);
 		}
 	}
 	streamOpts.apiKey = buildGatewayApiKeyResolver(
@@ -627,10 +654,14 @@ async function handleFormatEndpoint(
 				const classified = classifyGatewayError(errorMessage);
 				return route.module.formatError(classified.status, classified.type, errorMessage);
 			}
-			return json(200, { ...route.module.encodeResponse(message, parsed.modelId), ...muxResponseBody(responseMux) }, {
-				...gatewayResponseHeaders(model, { requestId, message, startedAt }),
-				...muxResponseHeaders(mux),
-			});
+			return json(
+				200,
+				{ ...route.module.encodeResponse(message, parsed.modelId), ...muxResponseBody(responseMux) },
+				{
+					...gatewayResponseHeaders(model, { requestId, message, startedAt }),
+					...muxResponseHeaders(mux),
+				},
+			);
 		} catch (error) {
 			if (controller.signal.aborted) return clientClosedResponse(route);
 			const classified = classifyGatewayError(error);
@@ -820,10 +851,14 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 				const classified = classifyGatewayError(errorMessage);
 				return piNative.formatError(classified.status, classified.type, errorMessage);
 			}
-			return json(200, { message }, {
-				...gatewayResponseHeaders(model, { requestId, message, startedAt }),
-				...muxResponseHeaders(mux),
-			});
+			return json(
+				200,
+				{ message },
+				{
+					...gatewayResponseHeaders(model, { requestId, message, startedAt }),
+					...muxResponseHeaders(mux),
+				},
+			);
 		} catch (error) {
 			if (controller.signal.aborted) return aborted();
 			const classified = classifyGatewayError(error);
@@ -957,7 +992,7 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 						json(200, {
 							policy: mux.policy,
 							stickySessions: mux.stickySessions,
-							aliases: ["mux/cheap", "mux/capable"],
+							aliases: ["mux/cheap", "mux/capable", "mux/vision"],
 							cheap: cheapCreditSnapshot(reports, mux.policy),
 							capable: mux.policy.capableOrder.map(target => seatStatus(target, reports, mux.policy)),
 						}),

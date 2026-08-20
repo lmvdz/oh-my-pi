@@ -22,6 +22,7 @@ interface Harness {
 interface HarnessOptions {
 	activeModel: { provider: GeneratedProvider; id: string };
 	seedMessages?: Message[];
+	settings?: Record<string, unknown>;
 }
 
 async function createHarness(modelRegistry: ModelRegistry, options: HarnessOptions): Promise<Harness> {
@@ -44,6 +45,7 @@ async function createHarness(modelRegistry: ModelRegistry, options: HarnessOptio
 		// snapcompact's renderability preflight to scan.
 		"compaction.keepRecentTokens": 1,
 		modelRoles: { vision: "aimlapi/claude-sonnet-4-5-20250929" },
+		...options.settings,
 	});
 	const session = new AgentSession({
 		agent,
@@ -146,6 +148,7 @@ describe("AgentSession auto-snapcompact local-blocker fallback", () => {
 	it("downgrades to context-full when unsupported glyphs make snapcompact unsafe", async () => {
 		const harness = await createHarness(modelRegistry, {
 			activeModel: { provider: "aimlapi", id: "claude-sonnet-4-5-20250929" },
+			settings: { "images.describeForVisionModels": false },
 			seedMessages: [
 				{
 					role: "user",

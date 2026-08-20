@@ -109,6 +109,18 @@ describe("describeAttachedImagesForTextModel", () => {
 		expect(saved.toString("base64")).toBe(TINY_PNG_BASE64);
 	});
 
+	it("uses the configured vision role instead of the first image-capable model", async () => {
+		const preferredVisionModel: Model<"openai-responses"> = { ...visionModel, id: "gpt-4o-mini" };
+		const stub = makeCompleteStub("A compact diagram.");
+		const deps = makeDeps(testDir, [visionModel, preferredVisionModel], stub.fn);
+		deps.settings.overrideModelRoles({ vision: `${preferredVisionModel.provider}/${preferredVisionModel.id}` });
+
+		await describeAttachedImagesForTextModel([{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }], deps);
+
+		// A configured @vision role determines the isolated sidecar's model.
+		expect(stub.calls[0]?.[0]).toEqual(preferredVisionModel);
+	});
+
 	it("saves the image but emits a no-vision note when no vision model is available", async () => {
 		const stub = makeCompleteStub("should not be used");
 		const blocks = await describeAttachedImagesForTextModel(

@@ -893,11 +893,17 @@ function stripImagesFromMessageContent(message: AgentMessage): number {
  * Consecutive placeholder texts collapse into one so a message that was nothing
  * but images does not balloon into a run of identical notes.
  */
-export function replaceLlmImagesWithText(messages: Message[], placeholder: string): Message[] {
+export function replaceLlmImagesWithText(
+	messages: Message[],
+	placeholder: string,
+	options?: { roles?: readonly ("user" | "developer" | "toolResult")[] },
+): Message[] {
+	const roles = options?.roles;
 	let out: Message[] | undefined;
 	for (let i = 0; i < messages.length; i++) {
 		const msg = messages[i];
 		if (msg.role !== "user" && msg.role !== "developer" && msg.role !== "toolResult") continue;
+		if (roles && !roles.includes(msg.role)) continue;
 		const content = msg.content;
 		if (!Array.isArray(content) || !content.some(part => part.type === "image")) continue;
 		const replaced: (TextContent | ImageContent)[] = [];

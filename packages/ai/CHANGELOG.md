@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a capability-aware mux vision lane. Image-bearing requests are resolved only to catalog-confirmed image-capable targets and never overflow to the text-only cheap lane.
+
 ## [17.3.7] - 2026-08-17
 
 ### Changed
