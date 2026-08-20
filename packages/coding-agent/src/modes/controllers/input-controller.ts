@@ -38,6 +38,7 @@ import { EnhancedPasteController } from "../../utils/enhanced-paste";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
+import { resolveWslDragPath } from "../../utils/wsl-path";
 
 /**
  * Slash commands that may carry secrets in their arguments should never be
@@ -1567,9 +1568,10 @@ export class InputController {
 	}
 
 	async handleImagePathPaste(path: string): Promise<void> {
+		const localPath = resolveWslDragPath(path);
 		try {
 			const image = await loadImageInput({
-				path,
+				path: localPath,
 				cwd: this.ctx.sessionManager.getCwd(),
 				autoResize: false,
 			});

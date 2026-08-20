@@ -112,10 +112,11 @@ describe("openPath", () => {
 		expect(spawnCalls.map(call => call.cmd)).toEqual([["wslview", windowsPath]]);
 	});
 
-	it("keeps WSL URL opening on xdg-open without path conversion", () => {
+	it("opens WSL URLs through the registered Windows browser", () => {
 		setPlatform("linux");
 		process.env.WSL_INTEROP = "/run/WSL/1_interop";
-		vi.spyOn(piUtils, "$which").mockReturnValue("/usr/bin/wslview");
+		const powershellPath = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+		vi.spyOn(fs, "existsSync").mockImplementation(candidate => candidate === powershellPath);
 		const spawnSyncSpy = vi.spyOn(Bun, "spawnSync");
 		const spawnCalls: SpawnCall[] = [];
 		spySpawn(spawnCalls);
@@ -123,7 +124,13 @@ describe("openPath", () => {
 		openPath("https://example.com");
 
 		expect(spawnSyncSpy).not.toHaveBeenCalled();
-		expect(spawnCalls.map(call => call.cmd)).toEqual([["xdg-open", "https://example.com"]]);
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.cmd.slice(0, 4)).toEqual([
+			powershellPath,
+			"-NoProfile",
+			"-NonInteractive",
+			"-EncodedCommand",
+		]);
 	});
 
 	it("falls back to xdg-open when wslview is unavailable", () => {

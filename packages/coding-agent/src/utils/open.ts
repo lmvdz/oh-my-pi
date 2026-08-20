@@ -5,12 +5,13 @@ import { $which, logger } from "@oh-my-pi/pi-utils";
 
 const URL_SCHEME_PATTERN = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
 
+/** Whether this POSIX process is running through Windows Subsystem for Linux. */
+export function isWsl(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): boolean {
+	return platform === "linux" && Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP);
+}
+
 function getExistingWslLocalPath(urlOrPath: string): string | undefined {
-	if (
-		process.platform !== "linux" ||
-		!(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) ||
-		!$which("wslview")
-	) {
+	if (!isWsl() || !$which("wslview")) {
 		return undefined;
 	}
 
@@ -57,13 +58,7 @@ function getExistingWslLocalPath(urlOrPath: string): string | undefined {
  * `Executable not found in $PATH` from `Bun.spawn`. A bare-name fallback
  * remains for exotic SystemRoot layouts.
  */
-function windowsOpenerCommand(target: string): string[] {
-	const systemRoot = process.env.SystemRoot?.trim() || process.env.SYSTEMROOT?.trim() || "C:\\Windows";
-	// `path.win32` (not the platform-adaptive `path.join`) keeps Windows path
-	// separators when tests run under a POSIX host and matches Windows call
-	// conventions on the real target.
-	const absolute = path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-	const powershell = fs.existsSync(absolute) ? absolute : "powershell.exe";
+function startProcessCommand(powershell: string, target: string): string[] {
 	const script = `$ErrorActionPreference='Stop';Start-Process '${target.replaceAll("'", "''")}'`;
 	return [
 		powershell,
@@ -72,6 +67,23 @@ function windowsOpenerCommand(target: string): string[] {
 		"-EncodedCommand",
 		Buffer.from(script, "utf16le").toString("base64"),
 	];
+}
+
+function windowsOpenerCommand(target: string): string[] {
+	const systemRoot = process.env.SystemRoot?.trim() || process.env.SYSTEMROOT?.trim() || "C:\\Windows";
+	// `path.win32` (not the platform-adaptive `path.join`) keeps Windows path
+	// separators when tests run under a POSIX host and matches Windows call
+	// conventions on the real target.
+	const absolute = path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+	const powershell = fs.existsSync(absolute) ? absolute : "powershell.exe";
+	return startProcessCommand(powershell, target);
+}
+
+/** Resolve the registered Windows browser when WSL has no Linux desktop handler. */
+function wslUrlOpenerCommand(target: string): string[] | undefined {
+	const mountedPowerShell = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+	const powershell = fs.existsSync(mountedPowerShell) ? mountedPowerShell : $which("powershell.exe");
+	return powershell ? startProcessCommand(powershell, target) : undefined;
 }
 /** Open a URL or file path in the default browser/application. Best-effort, never throws. */
 export function openPath(urlOrPath: string): void {
@@ -84,8 +96,14 @@ export function openPath(urlOrPath: string): void {
 			cmd = windowsOpenerCommand(urlOrPath);
 			break;
 		default: {
-			const wslPath = getExistingWslLocalPath(urlOrPath);
-			cmd = wslPath ? ["wslview", wslPath] : ["xdg-open", urlOrPath];
+			const wslUrlCommand =
+				isWsl() && URL_SCHEME_PATTERN.test(urlOrPath) ? wslUrlOpenerCommand(urlOrPath) : undefined;
+			if (wslUrlCommand) {
+				cmd = wslUrlCommand;
+			} else {
+				const wslPath = getExistingWslLocalPath(urlOrPath);
+				cmd = wslPath ? ["wslview", wslPath] : ["xdg-open", urlOrPath];
+			}
 			break;
 		}
 	}
