@@ -14,6 +14,15 @@
 - Dashboard `/api/stats/routing` endpoint with cheap/capable breakdown
 - Dashboard routing tab (client-side UI)
 - `syncRoutingQuick()` for fast routing log sync without full session scan
+## [17.4.0] - 2026-08-20
+
+### Changed
+
+- Window token estimates now incorporate broker-reported fleet token burn when an auth broker is configured, accurately tracking fleet-wide usage instead of undercounting with local-only statistics.
+
+### Fixed
+
+- Fixed an issue in subscription-window insights where distinct limits sharing a duration label (such as Anthropic overall vs. model-scoped 7-day windows) were incorrectly merged, which inflated window-equivalents and skewed tokens-per-window estimates. Windows are now grouped by provider limit ID.
 
 ## [17.3.6] - 2026-08-17
 

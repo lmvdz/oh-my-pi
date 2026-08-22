@@ -64,7 +64,7 @@ export async function syncRoutingLog(logPath: string): Promise<number> {
 	const offset = stored?.offset ?? 0;
 
 	// Stat the file to detect truncation / rotation
-	let file: file.File;
+	let file: Bun.BunFile;
 	try {
 		const f = Bun.file(logPath);
 		const exists = await f.exists();

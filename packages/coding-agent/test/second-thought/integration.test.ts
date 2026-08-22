@@ -935,18 +935,11 @@ describe("Second Thought end to end", () => {
 
 	it("carries no fold across a handoff", async () => {
 		// A handoff replaces the entire transcript the reflections describe, so no
-		// fold may survive it. `session-handoff.ts` calls `resetSecondThought()`
-		// next to `resetAdvisorSessionState()`.
+		// fold may survive it. Session maintenance commits the handoff as a
+		// compaction boundary, which must reset the coordinator too.
 		//
-		// Stated plainly, because a reader deserves to know how much this test
-		// proves: the handoff's own `agent.replaceMessages` already moves the epoch
-		// through the wrapped method, so this OUTCOME holds with the explicit reset
-		// removed. The explicit call is there so the rule is written down at the
-		// boundary instead of emerging from a side effect two modules away, and so
-		// that a fork still in flight (a handoff racing a run) is cancelled rather
-		// than merely made undeliverable. What this test guards is the outcome —
-		// it fails if either mechanism is removed AND the other is not there to
-		// cover it.
+		// A handoff racing a live fork must cancel it rather than merely making its
+		// pending fold undeliverable.
 		const { session, script } = await createHarness({
 			script: {
 				turns: [
@@ -958,7 +951,11 @@ describe("Second Thought end to end", () => {
 				],
 				branchText: REFLECT_TEXT,
 			},
-			settings: { "secondThought.deliveryCalls": 4 },
+			settings: {
+				"compaction.enabled": false,
+				"compaction.keepRecentTokens": 1,
+				"secondThought.deliveryCalls": 4,
+			},
 		});
 		const runtime = session.secondThought!;
 

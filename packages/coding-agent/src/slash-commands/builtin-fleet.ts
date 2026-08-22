@@ -1,3 +1,4 @@
+import type { Dirent, Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -28,7 +29,7 @@ async function saveScannedCache(set: Set<string>): Promise<void> {
 
 async function syncSessionMuxDecisions(): Promise<void> {
 	const dir = path.join(os.homedir(), ".omp", "agent", "sessions");
-	let entries: fs.Dirent[];
+	let entries: Dirent[];
 	try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
 	const fullyScanned = await loadScannedCache();
 	const cutoff = Date.now() - 60 * 60 * 1000;
@@ -39,7 +40,7 @@ async function syncSessionMuxDecisions(): Promise<void> {
 		if (!e.isDirectory()) continue;
 		if (fullyScanned.has(e.name)) continue;
 		const fullPath = path.join(dir, e.name);
-		let stat: fs.Stats;
+		let stat: Stats;
 		try { stat = await fs.stat(fullPath); } catch { continue; }
 		if (stat.mtimeMs < cutoff) { fullyScanned.add(e.name); continue; }
 		let files: string[];

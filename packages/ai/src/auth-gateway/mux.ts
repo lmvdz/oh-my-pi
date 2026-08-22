@@ -122,7 +122,7 @@ export function parseCapableOrder(spec: string): MuxTarget[] {
 export function loadMuxPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): MuxPolicy {
 	const weekly = parseUnitInterval(env.OMP_MUX_WEEKLY_CLOSE, DEFAULT_MUX_POLICY.weeklyCloseAt);
 	const fiveHour = parseUnitInterval(env.OMP_MUX_FIVE_HOUR_CLOSE, DEFAULT_MUX_POLICY.fiveHourCloseAt);
-	const cheapMinUsd = parseNonNegative(env.OMP_MUX_CHEAP_MIN_USD, DEFAULT_MUX_POLICY.cheapMinUsd);
+	const cheapMinUsd = parseNonNegative(env.OMP_MUX_CHEAP_MIN_USD, DEFAULT_MUX_POLICY.cheapMinUsd ?? 0);
 	const cheapCap = parsePositiveInt(env.OMP_MUX_CHEAP_MAX_OUTPUT_TOKENS, DEFAULT_MUX_POLICY.cheapMaxOutputTokens);
 	const cheap = (env.OMP_MUX_CHEAP ? parseMuxTarget(env.OMP_MUX_CHEAP) : undefined) ?? DEFAULT_MUX_POLICY.cheap;
 	const capableOrder = env.OMP_MUX_CAPABLE ? parseCapableOrder(env.OMP_MUX_CAPABLE) : DEFAULT_MUX_POLICY.capableOrder;
@@ -191,7 +191,7 @@ export function cheapCreditSnapshot(reports: UsageReport[], policy: MuxPolicy): 
 		}
 	}
 
-	const minUsd = policy.cheapMinUsd ?? DEFAULT_MUX_POLICY.cheapMinUsd;
+	const minUsd = policy.cheapMinUsd ?? DEFAULT_MUX_POLICY.cheapMinUsd ?? 0;
 	if (exhausted || (remaining !== undefined && remaining <= minUsd)) {
 		return { open: false, remainingUsd: remaining, limitUsd: limit, usedUsd: used, reason: "credits" };
 	}

@@ -129,7 +129,13 @@ export class TerminalInfo {
 		if (this.imageProtocol === ImageProtocol.Sixel) {
 			return hasSixelDcsStart(line);
 		}
-		return hasNeedleBefore(line, this.imageProtocol, 64) || hasNeedleBefore(line, KITTY_PLACEHOLDER, 64);
+		// 512-unit window: placeholder cells can sit deep in a composed row —
+		// the composer attachment band prefixes each thumbnail row with border
+		// SGRs and stacks cards side by side, so the first placeholder of a
+		// later card starts hundreds of units in. Rows past the window would
+		// silently lose the verbatim image-line path (no truncation, no SGR
+		// coalescing) that placeholder grids and placement APCs rely on.
+		return hasNeedleBefore(line, this.imageProtocol, 512) || hasNeedleBefore(line, KITTY_PLACEHOLDER, 512);
 	}
 
 	formatNotification(message: string | TerminalNotification): string {
@@ -221,6 +227,16 @@ function getForcedImageProtocol(): ImageProtocol | null | undefined {
 	if (raw === "sixel") return ImageProtocol.Sixel;
 	if (raw === "off" || raw === "none" || raw === "0" || raw === "false") return null;
 	return null;
+}
+
+/**
+ * Whether `PI_FORCE_IMAGE_PROTOCOL` pins the image protocol, including its
+ * `off`/`none` kill switch. A runtime capability probe must not override an
+ * explicit user choice: a forced protocol is already applied to {@link TERMINAL},
+ * and a forced "off" leaves `imageProtocol` null on purpose.
+ */
+export function isImageProtocolForced(): boolean {
+	return getForcedImageProtocol() !== undefined;
 }
 
 function parseMajorMinorVersion(versionRaw?: string): { major: number; minor: number } | null {

@@ -15,6 +15,7 @@ export {
 	type SyncOptions,
 	type SyncProgress,
 	syncAllSessions,
+	smokeTestSyncWorker,
 	syncRoutingLog,
 	syncRoutingQuick,
 } from "./aggregator";

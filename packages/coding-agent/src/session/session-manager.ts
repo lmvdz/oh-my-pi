@@ -21,6 +21,7 @@ import {
 import type { StructuredSubagentSchemaMode } from "../task/types";
 import { ArtifactManager } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore } from "./blob-store";
+import type { CompactionMethod } from "./compaction-methods";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -1951,6 +1952,21 @@ export class SessionManager {
 		return this.#sessionFile;
 	}
 
+	/**
+	 * Whether the current session has actually been materialized to durable
+	 * storage (the JSONL exists on disk / in the active storage backend).
+	 *
+	 * Session persistence is lazy: the file is only written once the history
+	 * contains an assistant message (or an explicit {@link ensureOnDisk}
+	 * caller forces it). Until then {@link getSessionFile} returns an allocated
+	 * path that leads nowhere, so a `--resume <id>` hint built from it would
+	 * always fail. Consumers that advertise a resume command must gate on this
+	 * (issue #8860).
+	 */
+	isSessionOnDisk(): boolean {
+		return !!this.#sessionFile && this.#storage.existsSync(this.#sessionFile);
+	}
+
 	getArtifactsDir(): string | null {
 		if (this.#adoptedArtifactManager) return this.#adoptedArtifactManager.dir;
 		return artifactsDirectoryFor(this.#sessionFile);
@@ -2177,7 +2193,7 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	appendMuxDecision(lane: "cheap" | "capable", target: string, reason: string, traceId?: string): string {
+	appendMuxDecision(lane: "cheap" | "capable" | "fleet" | "ship", target: string, reason: string, traceId?: string): string {
 		const entry: MuxDecisionEntry = {
 			type: "mux_decision",
 			...this.#freshEntryFields(),
@@ -2240,9 +2256,13 @@ export class SessionManager {
 		shortSummary: string | undefined,
 		firstKeptEntryId: string,
 		tokensBefore: number,
-		details?: T,
-		fromExtension?: boolean,
-		preserveData?: Record<string, unknown>,
+		options: {
+			details?: T;
+			fromExtension?: boolean;
+			preserveData?: Record<string, unknown>;
+			method?: CompactionMethod;
+			tokensAfter?: number;
+		} = {},
 	): string {
 		const entry: CompactionEntry<T> = {
 			type: "compaction",
@@ -2251,9 +2271,11 @@ export class SessionManager {
 			shortSummary,
 			firstKeptEntryId,
 			tokensBefore,
-			details,
-			fromExtension,
-			preserveData,
+			tokensAfter: options.tokensAfter,
+			method: options.method,
+			details: options.details,
+			fromExtension: options.fromExtension,
+			preserveData: options.preserveData,
 		};
 		this.#recordEntry(entry);
 		return entry.id;

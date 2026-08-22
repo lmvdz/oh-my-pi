@@ -1,3 +1,4 @@
+import type { Dirent, Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -52,14 +53,14 @@ async function syncSessionMuxDecisions(): Promise<void> {
 		const data = await Bun.file(SCANNED_CACHE_PATH).text();
 		fullyScanned = new Set(JSON.parse(data));
 	} catch {}
-	let entries: fs.Dirent[];
+	let entries: Dirent[];
 	try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
 	const cutoff = Date.now() - ONE_HOUR_MS;
 	const batch: RoutingDecisionRow[] = [];
 	for (const e of entries) {
 		if (!e.isDirectory() || fullyScanned.has(e.name)) continue;
 		const fullPath = path.join(dir, e.name);
-		let stat: fs.Stats;
+		let stat: Stats;
 		try { stat = await fs.stat(fullPath); } catch { continue; }
 		if (stat.mtimeMs < cutoff) continue;
 		let files: string[];
@@ -97,7 +98,19 @@ async function fetchRecentDecisions(limit: number, routingLogPath?: string): Pro
 			}
 		}
 	} catch {}
-	return getRecentRoutingDecisions(limit);
+	return getRecentRoutingDecisions(limit).map(decision => ({
+		...decision,
+		sy_route: decision.sy_route ?? null,
+		sy_tier: decision.sy_tier ?? null,
+		sy_model: decision.sy_model ?? null,
+		sy_prompt_tokens: decision.sy_prompt_tokens ?? null,
+		sy_cached_tokens: decision.sy_cached_tokens ?? null,
+		sy_completion_tokens: decision.sy_completion_tokens ?? null,
+		sy_reasoning_tokens: decision.sy_reasoning_tokens ?? null,
+		mux_lane: decision.mux_lane ?? null,
+		mux_target: decision.mux_target ?? null,
+		mux_reason: decision.mux_reason ?? null,
+	}));
 }
 function formatTime(ts: number): string {
 	return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
