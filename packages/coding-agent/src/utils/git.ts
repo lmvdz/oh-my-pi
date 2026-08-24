@@ -1907,6 +1907,46 @@ export const log = {
 			await runText(cwd, ["log", `-${count}`, "--oneline", "--no-decorate"], { readOnly: true, signal }),
 		);
 	},
+	/**
+	 * Bounded name-status history, newest first. Each entry carries the commit
+	 * SHA, commit time (unix seconds), and one name-status row; rename/copy rows
+	 * carry both old and new paths. Omit `path` to scan the whole tree (rename
+	 * detection needs the full diff, so a path-limited query cannot see R rows).
+	 */
+	async nameStatus(
+		cwd: string,
+		options: { ref: string; limit: number; path?: string },
+		signal?: AbortSignal,
+	): Promise<{ commit: string; commitTime: number; status: string; paths: string[] }[]> {
+		const text = await runText(
+			cwd,
+			[
+				"log",
+				`--max-count=${options.limit}`,
+				"--name-status",
+				"--find-renames",
+				"--format=%H|%ct",
+				options.ref,
+				...(options.path ? ["--", options.path] : []),
+			],
+			{ readOnly: true, signal },
+		);
+		const entries: { commit: string; commitTime: number; status: string; paths: string[] }[] = [];
+		let commit: string | undefined;
+		let commitTime = 0;
+		for (const line of splitLines(text)) {
+			const [sha, seconds] = line.split("|");
+			if (sha && /^[0-9a-f]{40}$/.test(sha) && /^\d+$/.test(seconds ?? "")) {
+				commit = sha;
+				commitTime = Number(seconds);
+				continue;
+			}
+			const columns = line.split("\t");
+			if (!commit || columns.length < 2) continue;
+			entries.push({ commit, commitTime, status: columns[0]!, paths: columns.slice(1) });
+		}
+		return entries;
+	},
 };
 
 export const revList = {
@@ -2440,6 +2480,19 @@ export const ls = {
 			signal,
 		});
 		return splitLines(output.stdout);
+	},
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// API: index
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Read-only helpers for content-addressed entries in the Git index. */
+export const index = {
+	/** Resolve the staged blob ID for one tracked path; undefined when it is absent from the index. */
+	async blobId(cwd: string, file: string, signal?: AbortSignal): Promise<string | undefined> {
+		const output = await tryText(cwd, ["rev-parse", "--verify", `:${file}`], { readOnly: true, signal });
+		return output?.trim() || undefined;
 	},
 };
 

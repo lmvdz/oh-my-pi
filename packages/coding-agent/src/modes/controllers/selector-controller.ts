@@ -22,6 +22,11 @@ import {
 } from "../../config/model-resolver";
 import { getRoleInfo } from "../../config/model-roles";
 import { settings } from "../../config/settings";
+import { getActiveContextLineageRun, getActiveContextLineageRuns } from "../../context-lineage/active-runs";
+import { artifactIdFromRef } from "../../context-lineage/runtime";
+import { getContextLineageSessionRecords, resolveContextLineageCandidateFamily } from "../../context-lineage/session";
+import { stageTasks } from "../../context-lineage/types";
+import { validateFanoutRequest } from "../../context-lineage/validation";
 import { disableProvider, enableProvider } from "../../discovery";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
@@ -77,7 +82,7 @@ import {
 	type ToolSession,
 } from "../../tools";
 import { AskTool, type AskToolDetails, type AskToolInput } from "../../tools/ask";
-import { shortenPath } from "../../tools/render-utils";
+import { replaceTabs, shortenPath } from "../../tools/render-utils";
 import { ToolAbortError } from "../../tools/tool-errors";
 import { copyToClipboard } from "../../utils/clipboard";
 import { repo } from "../../utils/git";
@@ -86,6 +91,13 @@ import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../compon
 import { AgentHubOverlayComponent } from "../components/agent-hub";
 import { AgentsHubComponent } from "../components/agents-hub";
 import { AssistantMessageComponent } from "../components/assistant-message";
+import {
+	ContextLineageBoardComponent,
+	type ContextLineageBoardRun,
+	ContextLineageCandidateBoardComponent,
+	type ContextLineageCandidateBoardFamily,
+	parseContextLineageQuestionEditorInput,
+} from "../components/context-lineage-board";
 import { CopySelectorComponent } from "../components/copy-selector";
 import { ExtensionDashboard } from "../components/extensions";
 import { listLiveToolRecords, liveToolRecordFromSession } from "../components/extensions/live-tool-session";
@@ -453,6 +465,216 @@ export class SelectorController {
 			{ onCancel: () => done() },
 		);
 		overlayHandle = this.#showFullscreenMenu(hub);
+	}
+
+	/** Fullscreen durable results board for Parallel Questions (PR 8A). */
+	showContextLineageBoard(): void {
+		if (this.ctx.session.isStreaming || this.ctx.session.isCompacting || this.ctx.session.hasPostPromptWork) {
+			this.ctx.showStatus("Parallel Questions are available from an idle, stable session leaf.");
+			return;
+		}
+		const records = getContextLineageSessionRecords(this.ctx.sessionManager);
+		const discarded = new Set(
+			records
+				.filter(
+					(record): record is Extract<(typeof records)[number], { kind: "discarded_output" }> =>
+						record.kind === "discarded_output",
+				)
+				.map(record => `${record.runId}:${record.taskId}`),
+		);
+		const plans = new Map(
+			records
+				.filter((record): record is Extract<(typeof records)[number], { kind: "plan" }> => record.kind === "plan")
+				.map(record => [record.planId, record.plan]),
+		);
+		const runs: ContextLineageBoardRun[] = records
+			.filter(
+				(record): record is Extract<(typeof records)[number], { kind: "execution" }> =>
+					record.kind === "execution" && record.stageId === undefined && record.runId !== undefined,
+			)
+			.map(record => {
+				const assignments = new Map(
+					plans
+						.get(record.planId)
+						?.stages.flatMap(stage => stageTasks(stage))
+						.map(task => [task.id, task.assignment]) ?? [],
+				);
+				return {
+					runId: record.runId!,
+					status: record.status,
+					answers: record.outputs
+						.filter(output => !discarded.has(`${record.runId}:${output.taskId}`))
+						.map(output => ({
+							taskId: output.taskId,
+							assignment: assignments.get(output.taskId) ?? output.taskId,
+							artifactRef: output.artifactRef,
+							...(output.cacheStatus ? { cacheStatus: output.cacheStatus } : {}),
+						})),
+				};
+			});
+		for (const active of getActiveContextLineageRuns(this.ctx.session.sessionId)) {
+			if (runs.some(run => run.runId === active.runId)) continue;
+			runs.push({
+				runId: active.runId,
+				status: "running",
+				answers: active.plan.stages.flatMap(stage =>
+					stageTasks(stage).map(task => ({
+						stageId: stage.id,
+						taskId: task.id,
+						assignment: task.assignment,
+						artifactRef: "pending sidecar result",
+					})),
+				),
+			});
+		}
+		const board = new ContextLineageBoardComponent(runs);
+		const overlay = this.#showFullscreenMenu(board);
+		board.onClose = () => {
+			overlay.hide();
+			this.focusActiveEditorArea();
+			this.ctx.ui.requestRender();
+		};
+		board.onRequestRender = () => this.ctx.ui.requestRender();
+		board.onAskFromHere = () => void this.#showContextLineageQuestionEditor(board);
+		board.onAction = (action, run, answerIndex) => {
+			const answerNumber = answerIndex + 1;
+			if (action === "copy") {
+				const answer = run.answers[answerIndex];
+				void (async () => {
+					const artifactId = answer ? artifactIdFromRef(answer.artifactRef) : undefined;
+					const artifactPath = artifactId ? await this.ctx.sessionManager.getArtifactPath(artifactId) : null;
+					if (!artifactPath) {
+						this.ctx.showStatus("That Parallel Questions answer has no completed sidecar artifact to copy.");
+						return;
+					}
+					await copyToClipboard(await Bun.file(artifactPath).text());
+					this.ctx.showStatus(`Copied Parallel Questions answer ${answerNumber}.`);
+				})().catch(error =>
+					this.ctx.showStatus(`Could not copy Parallel Questions answer: ${replaceTabs(String(error))}`),
+				);
+				return;
+			}
+			if (action === "cancel") {
+				const answer = run.answers[answerIndex];
+				const active = getActiveContextLineageRun(this.ctx.session.sessionId, run.runId);
+				if (!answer?.stageId || !active?.controller.cancel(answer.stageId, answer.taskId)) {
+					this.ctx.showStatus("That Parallel Questions item is no longer cancellable.");
+				} else {
+					this.ctx.showStatus(`Cancelled Parallel Questions item ${answerIndex + 1}.`);
+				}
+				this.ctx.ui.requestRender();
+				return;
+			}
+			if (action === "inspect") this.ctx.editor.setText(`/lineage answers ${run.runId}`);
+			if (action === "retry") this.ctx.editor.setText(`/fanout --resume ${run.runId}`);
+			if (action === "promote") this.ctx.editor.setText(`/lineage promote ${run.runId} ${answerNumber}`);
+			if (action === "discard") this.ctx.editor.setText(`/lineage discard ${run.runId} ${answerNumber}`);
+			if (action === "synthesize") this.ctx.editor.setText(`/lineage synthesize ${run.runId}`);
+			if (action === "diagnostics") this.ctx.editor.setText(`/lineage diagnostics ${run.runId}`);
+			board.onClose?.();
+		};
+	}
+
+	/** Fullscreen artifact-only board for controlled candidate families (PR10). */
+	showContextLineageCandidateBoard(): void {
+		if (this.ctx.session.isStreaming || this.ctx.session.isCompacting || this.ctx.session.hasPostPromptWork) {
+			this.ctx.showStatus("Controlled Candidates are available from an idle, stable session leaf.");
+			return;
+		}
+		const records = getContextLineageSessionRecords(this.ctx.sessionManager);
+		const families: ContextLineageCandidateBoardFamily[] = records
+			.filter(
+				(record): record is Extract<(typeof records)[number], { kind: "candidate_family" }> =>
+					record.kind === "candidate_family",
+			)
+			.map(record => resolveContextLineageCandidateFamily(record.familyId, records))
+			.filter((family): family is NonNullable<typeof family> => family !== undefined)
+			.map(family => ({
+				familyId: family.family.familyId,
+				planId: family.family.planId,
+				taskId: family.family.taskId,
+				candidates: family.candidates.map(candidate => ({
+					candidateId: candidate.candidateId,
+					status: candidate.status,
+					variation: candidate.variation.map(item => `${item.label}/${item.id}=${item.value}`).join(", "),
+					...(candidate.artifactRef ? { artifactRef: candidate.artifactRef } : {}),
+				})),
+				reviewCount: family.reviews.length,
+				adjudicationCount: family.adjudications.length,
+				selectionCount: family.selections.length,
+			}));
+		const board = new ContextLineageCandidateBoardComponent(families);
+		const overlay = this.#showFullscreenMenu(board);
+		board.onClose = () => {
+			overlay.hide();
+			this.focusActiveEditorArea();
+			this.ctx.ui.requestRender();
+		};
+		board.onRequestRender = () => this.ctx.ui.requestRender();
+		board.onAction = (action, family, candidateIndex) => {
+			const candidateNumber = candidateIndex + 1;
+			const prefix = `/lineage candidate`;
+			if (action === "copy") {
+				const candidate = family.candidates[candidateIndex];
+				void (async () => {
+					const artifactId = candidate?.artifactRef ? artifactIdFromRef(candidate.artifactRef) : undefined;
+					const artifactPath = artifactId ? await this.ctx.sessionManager.getArtifactPath(artifactId) : null;
+					if (!artifactPath) {
+						this.ctx.showStatus("That candidate has no completed sidecar artifact to copy.");
+						return;
+					}
+					await copyToClipboard(await Bun.file(artifactPath).text());
+					this.ctx.showStatus(`Copied candidate #${candidateNumber}.`);
+				})().catch(error => this.ctx.showStatus(`Could not copy candidate: ${replaceTabs(String(error))}`));
+				return;
+			}
+			if (action === "rubric") this.ctx.editor.setText(`${prefix} rubric <rubric text>`);
+			if (action === "inspect") this.ctx.editor.setText(`${prefix} inspect ${family.familyId} ${candidateNumber}`);
+			if (action === "retry") this.ctx.editor.setText(`${prefix} run ${family.familyId}`);
+			if (action === "discard") this.ctx.editor.setText(`${prefix} discard ${family.familyId} ${candidateNumber}`);
+			if (action === "stop") this.ctx.editor.setText(`${prefix} stop ${family.familyId}`);
+			if (action === "review")
+				this.ctx.editor.setText(`${prefix} review ${family.familyId} ${candidateNumber} <rubric-artifact-ref>`);
+			if (action === "adjudicate")
+				this.ctx.editor.setText(
+					`${prefix} adjudicate ${family.familyId} <rubric-artifact-ref> :: <review-id> <review-id>`,
+				);
+			if (action === "select")
+				this.ctx.editor.setText(
+					`${prefix} select ${family.familyId} ${candidateNumber} <rubric-artifact-ref> :: <evaluator> :: <explanation>`,
+				);
+			if (action === "approve")
+				this.ctx.editor.setText(`${prefix} approve ${family.familyId} ${candidateNumber} <selection-id>`);
+			if (action === "replay") this.ctx.editor.setText(`${prefix} replay <approval-id> <run-id>`);
+			board.onClose?.();
+		};
+	}
+
+	/** Multi-line question editor for the durable Parallel Questions workflow. */
+	async #showContextLineageQuestionEditor(board: ContextLineageBoardComponent): Promise<void> {
+		if (this.ctx.session.isStreaming || this.ctx.session.isCompacting || this.ctx.session.hasPostPromptWork) {
+			this.ctx.showStatus("Parallel Questions are available from an idle, stable session leaf.");
+			return;
+		}
+		const source = await this.ctx.showHookEditor("Parallel Questions — enter one independent question per line");
+		if (source === undefined) return;
+		const questions = parseContextLineageQuestionEditorInput(source);
+		const validation = validateFanoutRequest(
+			{
+				version: 1,
+				checkpoint: { type: "current_idle" },
+				questions: questions.map(question => ({ question })),
+			},
+			Number(settings.get("contextLineage.fanout.maxItems")) || 5,
+		);
+		if (!validation.valid) {
+			this.ctx.showStatus(
+				`Cannot prepare Parallel Questions: ${validation.issues[0]?.message ?? "invalid question list"}`,
+			);
+			return;
+		}
+		this.ctx.editor.setText(`/fanout ${questions.join(" | ")}`);
+		board.onClose?.();
 	}
 
 	/**

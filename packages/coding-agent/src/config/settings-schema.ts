@@ -1647,6 +1647,147 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	/** Context Lineage (repository context compiler) master gate; default-off until the plan-quality gate passes. */
+	"contextLineage.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "context",
+			group: "General",
+			label: "Context Lineage",
+			description:
+				"Enable the repository Context Lineage surfaces (/lineage, /wayfinder): frozen repository snapshots, evidence manifests, and validated repository plans.",
+		},
+	},
+
+	/** Parallel-questions surface (/lineage ask); requires contextLineage.enabled. */
+	"contextLineage.fanout.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: "General",
+			label: "Fanout Surface",
+			description: "Enable /lineage ask parallel-question runs.",
+		},
+	},
+
+	/** Plan creation/execution surface; requires contextLineage.enabled. */
+	"contextLineage.plans.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: "General",
+			label: "Plan Surface",
+			description: "Enable /lineage plan creation, execution, and resume.",
+		},
+	},
+
+	/** Repository-context compilation surface; requires contextLineage.enabled. */
+	"contextLineage.repositoryContext.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: "General",
+			label: "Repository Context",
+			description: "Enable frozen repository-context compilation and inspection.",
+		},
+	},
+
+	/** Warm coordination for /lineage ask (§18.3): off until measured evidence. */
+	"contextLineage.fanout.warmPolicy": {
+		type: "enum",
+		values: ["off", "stagger_first"] as const,
+		default: "off",
+		ui: {
+			tab: "context",
+			group: "General",
+			label: "Fanout Warm Policy",
+			description:
+				"stagger_first dispatches the first question alone so its cache write lands before siblings read. Keep off until provider behavior is measured.",
+		},
+	},
+
+	/** Provider/user concurrency bound for lineage side-request dispatch (FR13). */
+	"contextLineage.fanout.maxConcurrency": {
+		type: "number",
+		default: 4,
+		ui: {
+			tab: "context",
+			group: "General",
+			label: "Fanout Max Concurrency",
+			description: "Maximum concurrently in-flight side requests for /lineage ask and plan execution.",
+		},
+	},
+
+	/** First-release cap on parallel questions per ask (FR10). */
+	"contextLineage.fanout.maxItems": {
+		type: "number",
+		default: 5,
+		ui: {
+			tab: "context",
+			group: "General",
+			label: "Fanout Max Items",
+			description: "Maximum number of independent questions per /lineage ask run.",
+		},
+	},
+
+	/** Opt-in bounded Git-history enrichment (churn/rename lineage) for compiled manifests. */
+	"contextLineage.repositoryContext.temporal": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "context",
+			group: "General",
+			label: "Temporal Evidence",
+			description:
+				"Enrich Context Lineage manifests with bounded Git history evidence (rename lineage and churn) labeled as historical or statistical.",
+		},
+	},
+
+	/** PR 3A read-only Graphify graph.json adapter; off never discovers or reads artifacts (§25.5). */
+	"contextLineage.repositoryContext.adapters.graphify": {
+		type: "enum",
+		values: ["off", "observe", "enabled"] as const,
+		default: "off",
+		ui: {
+			tab: "context",
+			group: "General",
+			label: "Graphify Adapter",
+			description:
+				"Normalize an existing graphify-out/graph.json into candidate evidence. observe reports candidates without adding them to the plan base; enabled includes them under the adapter budget. Never installs or rebuilds a graph.",
+		},
+	},
+
+	/** PR 3A read-only SCIP/local-index adapter; auto consumes an existing index, never installs or generates one (§25.5). */
+	"contextLineage.repositoryContext.adapters.scip": {
+		type: "enum",
+		values: ["off", "observe", "enabled", "auto"] as const,
+		default: "auto",
+		ui: {
+			tab: "context",
+			group: "General",
+			label: "SCIP Index Adapter",
+			description:
+				"Consume an existing local SCIP index (.scip/index.scip or index.scip) as candidate symbol-level evidence. auto uses an index only when already present; observe reports candidates; enabled includes them under the adapter budget.",
+		},
+	},
+
+	/** FR56: reject external artifacts whose source boundary mismatches the frozen snapshot instead of staleness-labeling them. */
+	"contextLineage.repositoryContext.adapters.requireSnapshotMatch": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: "General",
+			label: "Require Snapshot Match",
+			description:
+				"When on, a Graphify graph built for another commit (or a SCIP index inconsistent with the frozen tree) is rejected instead of included with stale labels.",
+		},
+	},
+
 	"workspace.additionalDirectories": {
 		type: "array",
 		default: [] as string[],

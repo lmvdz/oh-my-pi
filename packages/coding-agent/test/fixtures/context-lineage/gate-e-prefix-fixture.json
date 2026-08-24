@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "providerId": "fixture-provider",
+  "modelId": "fixture-model",
+  "captureId": "fixture-capture",
+  "basePrefixBase64": "AQID",
+  "leafPrefixesBase64": ["AQIDBA==", "AQIDBQY="]
+}

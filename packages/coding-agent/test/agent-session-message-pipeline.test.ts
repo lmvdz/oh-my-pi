@@ -483,6 +483,8 @@ describe("AgentSession message pipeline", () => {
 			const stream = new AssistantMessageEventStream();
 			queueMicrotask(() => {
 				const message = createAssistantMessage("Side answer");
+				message.usage.totalTokens = 123;
+				message.usage.cost.total = 0.04;
 				stream.push({ type: "text_delta", contentIndex: 0, delta: "Side answer", partial: message });
 				stream.push({ type: "done", reason: "stop", message });
 			});
@@ -507,6 +509,7 @@ describe("AgentSession message pipeline", () => {
 		const result = await session.runEphemeralTurn({ promptText: "Question?" });
 
 		expect(result.replyText).toBe("Side answer");
+		expect(result.usage).toEqual({ totalTokens: 123, costUsd: 0.04 });
 		expect(capturedContext?.messages.at(-1)?.content).toEqual([{ type: "text", text: "Question?" }]);
 		expect(capturedOptions?.sessionId).toStartWith(`${session.sessionId}:side:`);
 	});

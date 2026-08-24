@@ -5384,6 +5384,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		void this.#selectorController.showGitTui(revision);
 	}
 
+	showContextLineageBoard(): void {
+		this.#selectorController.showContextLineageBoard();
+	}
+
+	showContextLineageCandidateBoard(): void {
+		this.#selectorController.showContextLineageCandidateBoard();
+	}
+
 	showModelSelector(options?: { temporaryOnly?: boolean }): void {
 		this.#selectorController.showModelSelector(options);
 	}

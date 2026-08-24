@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "familyId": "context-lineage-family:v1:fixture",
+  "candidateIds": [
+    "context-lineage-candidate:v1:minimal",
+    "context-lineage-candidate:v1:staged"
+  ],
+  "rubricArtifactRef": "artifact://rubric-fixture",
+  "rubricContentDigest": "context-lineage-artifact-content:v1:fbbbbf77f8a5e5aa49e4f9931c8f2bc296dd5cfac7a8c00d11ea8d2cf38dd444",
+  "evaluatorProfileId": "independent-rubric-v1",
+  "continuedCandidateIds": [
+    "context-lineage-candidate:v1:minimal"
+  ],
+  "outcomes": [
+    {
+      "candidateId": "context-lineage-candidate:v1:minimal",
+      "artifactRef": "artifact://candidate-minimal",
+      "candidateContentDigest": "context-lineage-artifact-content:v1:82d29d0f2f4bcbd8246ee89af92c1919f6f76e79bdbfdc2d25777ba48f537460",
+      "evaluatorInputDigest": "context-lineage-evaluator-input:v1:7e2f6656c5977e5c46f7f3347e725b56ba5129f27f5884675b23b64abd1799f7",
+      "evaluationArtifactRef": "artifact://evaluation-minimal",
+      "evaluationContentDigest": "context-lineage-artifact-content:v1:d7fd8ff38c02b862a3d4964787e20c4643ab649d3e5b2d639f8d41d852e6f5c9",
+      "verdict": "unacceptable"
+    },
+    {
+      "candidateId": "context-lineage-candidate:v1:staged",
+      "artifactRef": "artifact://candidate-staged",
+      "candidateContentDigest": "context-lineage-artifact-content:v1:ef23ece8354a3304345fc9a54f2b9927c5643410f802582fe5904fbc968b6e5f",
+      "evaluatorInputDigest": "context-lineage-evaluator-input:v1:16c5c84a256c259e6feae8a54147fa05e7aae56de9ac022e7420ec4ddae7018b",
+      "evaluationArtifactRef": "artifact://evaluation-staged",
+      "evaluationContentDigest": "context-lineage-artifact-content:v1:192762a049d176452dc89a31497045524c0af20be151301ba7326de2f3ff5137",
+      "verdict": "acceptable"
+    }
+  ]
+}

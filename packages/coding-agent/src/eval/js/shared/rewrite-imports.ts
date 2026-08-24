@@ -240,6 +240,32 @@ export async function collectModuleSourceSpecifiers(code: string): Promise<strin
 	return sources;
 }
 
+/** Parsed import bindings for consumers that need symbol-level module relationships. */
+export interface ModuleImportBinding {
+	readonly source: string;
+	readonly imported: string | undefined;
+	readonly local: string;
+}
+
+export async function collectModuleImportBindings(code: string): Promise<ModuleImportBinding[]> {
+	const ast = await parseProgram(code);
+	if (!ast) return [];
+	const bindings: ModuleImportBinding[] = [];
+	for (const node of ast.program.body) {
+		if (node.type !== "ImportDeclaration") continue;
+		const declaration = node as BabelImportDeclaration;
+		for (const specifier of declaration.specifiers) {
+			const imported = specifier.imported;
+			bindings.push({
+				source: declaration.source.value,
+				imported: imported ? ("name" in imported ? imported.name : imported.value) : undefined,
+				local: specifier.local.name,
+			});
+		}
+	}
+	return bindings;
+}
+
 export async function rewriteModuleSourceSpecifiers(
 	code: string,
 	replacer: (source: string) => string,

@@ -8061,7 +8061,12 @@ export class AgentSession {
 		onTextDelta?: (delta: string) => void;
 		signal?: AbortSignal;
 		dedupeReply?: boolean;
-	}): Promise<{ replyText: string; assistantMessage: AssistantMessage }> {
+	}): Promise<{
+		replyText: string;
+		assistantMessage: AssistantMessage;
+		/** Final provider accounting is omitted when the response supplied no token total. */
+		usage?: { totalTokens: number; costUsd: number };
+	}> {
 		const model = this.model;
 		if (!model) {
 			throw new Error("No active model on session");
@@ -8142,6 +8147,14 @@ export class AgentSession {
 		return {
 			replyText: args.dedupeReply === false ? replyText.trim() : dedupeEphemeralReply(replyText.trim()),
 			assistantMessage: sanitizedMessage,
+			...(sanitizedMessage.usage.totalTokens > 0
+				? {
+						usage: {
+							totalTokens: sanitizedMessage.usage.totalTokens,
+							costUsd: sanitizedMessage.usage.cost.total,
+						},
+					}
+				: {}),
 		};
 	}
 
