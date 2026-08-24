@@ -2138,6 +2138,15 @@ export class AcpAgent implements Agent {
 					size: contextUsage.contextWindow,
 					used: contextUsage.tokens ?? 0,
 					cost: usageStats.cost > 0 ? { amount: usageStats.cost, currency: "USD" } : undefined,
+					// Cumulative per-session token accounting (same ledger the TUI footer
+					// and /usage read) so ACP clients can render in/out/cache/cost.
+					_meta: {
+						inputTokens: usageStats.input,
+						outputTokens: usageStats.output,
+						cacheRead: usageStats.cacheRead,
+						cacheWrite: usageStats.cacheWrite,
+						cost: usageStats.cost,
+					},
 				},
 			});
 		}

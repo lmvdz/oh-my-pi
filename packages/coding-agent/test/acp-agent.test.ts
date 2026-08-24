@@ -296,8 +296,10 @@ class FakeAgentSession {
 
 	async refreshMCPTools(_tools: unknown[]): Promise<void> {}
 
-	getContextUsage(): undefined {
-		return undefined;
+	contextUsage: { tokens?: number; contextWindow: number } | undefined;
+
+	getContextUsage(): { tokens?: number; contextWindow: number } | undefined {
+		return this.contextUsage;
 	}
 
 	async switchSession(sessionPath: string): Promise<boolean> {
@@ -1075,6 +1077,40 @@ describe("ACP agent", () => {
 		await expect(harness.agent.extMethod("omp/sessions/listAll", { limit: 2 })).rejects.toThrow(
 			"Unknown ACP ext method",
 		);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("emits cumulative session usage in usage_update _meta", async () => {
+		const harness = await createHarness();
+		const live = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.sessions.find(candidate => candidate.sessionId === live.sessionId);
+		if (!session) throw new Error("live session not registered");
+		session.contextUsage = { tokens: 1234, contextWindow: 200000 };
+
+		await harness.agent.prompt({ sessionId: live.sessionId, prompt: [{ type: "text", text: "ping" }] });
+		await harness.agent.prompt({ sessionId: live.sessionId, prompt: [{ type: "text", text: "pong" }] });
+		expectAcpNotifications(harness.updates);
+
+		const usageUpdates = harness.updates
+			.filter(update => update.sessionId === live.sessionId)
+			.map(update => update.update)
+			.filter(update => update.sessionUpdate === "usage_update");
+		expect(usageUpdates.length).toBe(2);
+		const last = usageUpdates.at(-1)!;
+		expect(last.used).toBe(1234);
+		expect(last.size).toBe(200000);
+		// Two assistant turns at 10/5/2/1 each: the ledger the footer and /usage read.
+		const expected = session.sessionManager.getUsageStatistics();
+		expect(expected).toMatchObject({ input: 20, output: 10, cacheRead: 4, cacheWrite: 2 });
+		expect(last._meta).toEqual({
+			inputTokens: expected.input,
+			outputTokens: expected.output,
+			cacheRead: expected.cacheRead,
+			cacheWrite: expected.cacheWrite,
+			cost: expected.cost,
+		});
 
 		harness.abortController.abort();
 		await Bun.sleep(0);
