@@ -138,6 +138,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.joinHelp,
 	},
 	{
+		name: "live",
+		load: () => import("./commands/live").then(m => m.default),
+		help: commandHelp.liveHelp,
+	},
+	{
 		name: "models",
 		load: () => import("./commands/models").then(m => m.default),
 		help: commandHelp.modelsHelp,

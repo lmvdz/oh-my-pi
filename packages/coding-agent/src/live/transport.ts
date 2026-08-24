@@ -7,6 +7,7 @@ import {
 	OPENAI_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
 import { LiveWebRtcPeer } from "@oh-my-pi/pi-natives";
+import { logger } from "@oh-my-pi/pi-utils";
 import { generateCodexAttestation } from "./attestation";
 import {
 	buildLiveSessionPayload,
@@ -333,15 +334,18 @@ export class CodexLiveTransport {
 		if (this.#state === "closing" || this.#state === "closed") return;
 		const event = parseLiveServerEvent(payload);
 		if (!event) return;
-		try {
-			this.#options.callbacks.onEvent(event);
-		} catch {}
+		this.#emitServerEvent(event);
 	}
 
 	#handleServerEvent(payload: string): void {
 		if (this.#state === "closing" || this.#state === "closed") return;
 		const event = parseLiveServerEvent(payload);
 		if (!event || (this.#sideband?.readyState === WebSocket.OPEN && event.type !== "error")) return;
+		this.#emitServerEvent(event);
+	}
+
+	#emitServerEvent(event: LiveServerEvent): void {
+		if (event.type === "error") logger.debug("Codex live server error", { details: event.details });
 		try {
 			this.#options.callbacks.onEvent(event);
 		} catch {}

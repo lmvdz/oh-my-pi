@@ -72,14 +72,16 @@ describe("Frameless Bidi server events", () => {
 		});
 	});
 
-	test("extracts top-level and nested error messages", () => {
-		expect(parseLiveServerEvent({ type: "error", message: "call expired" })).toEqual({
+	test("preserves complete error payloads for diagnostics", () => {
+		expect(parseLiveServerEvent({ type: "error", message: "call expired", code: "expired_call" })).toEqual({
 			type: "error",
 			message: "call expired",
+			details: { type: "error", message: "call expired", code: "expired_call" },
 		});
 		expect(parseLiveServerEvent({ type: "error", error: { message: "media rejected", code: "bad_media" } })).toEqual({
 			type: "error",
 			message: "media rejected",
+			details: { type: "error", error: { message: "media rejected", code: "bad_media" } },
 		});
 	});
 

@@ -51,7 +51,7 @@ export type LiveServerEvent =
 				content: LiveInputTextContent[];
 			};
 	  }
-	| { type: "error"; message: string }
+	| { type: "error"; message: string; details?: UnknownRecord }
 	| { type: "unknown"; wireType: string };
 
 type UnknownRecord = Record<string, unknown>;
@@ -128,13 +128,14 @@ function stringifyErrorValue(value: unknown): string | null {
 }
 
 function parseErrorEvent(payload: UnknownRecord): LiveServerEvent | null {
-	if (typeof payload.message === "string") return { type: "error", message: payload.message };
-	const error = payload.error;
-	if (isRecord(error) && typeof error.message === "string") {
-		return { type: "error", message: error.message };
+	let message: string | null;
+	if (typeof payload.message === "string") {
+		message = payload.message;
+	} else {
+		const error = payload.error;
+		message = isRecord(error) && typeof error.message === "string" ? error.message : stringifyErrorValue(error);
 	}
-	const message = stringifyErrorValue(error);
-	return message === null ? null : { type: "error", message };
+	return message === null ? null : { type: "error", message, details: payload };
 }
 
 /** Parse a JSON string or decoded value from the Frameless Bidi data channel. */
