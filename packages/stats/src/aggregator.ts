@@ -2,7 +2,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { syncRoutingLog } from "./routing-log";
+
 export { syncRoutingLog } from "./routing-log";
+
 import { getStatsDbPath, workerHostEntry } from "@oh-my-pi/pi-utils";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import {
@@ -20,22 +22,22 @@ import {
 	getOverallStats,
 	getProviderHourlyBurn,
 	getProviderTimeSeries,
+	getRecentRoutingDecisions,
 	getStatsByAgentType,
 	getStatsByFolder,
 	getStatsByModel,
 	getStatsByProvider,
 	getTimeSeries,
-	getRecentRoutingDecisions,
 	getToolStats,
 	getToolStatsByModel,
 	getToolTimeSeries,
 	initDb,
-	insertRoutingDecisions,
-	type RoutingDecisionRow,
 	insertMessageStats,
+	insertRoutingDecisions,
 	insertToolCalls,
 	insertUserMessageStats,
 	markSessionBackfillsComplete,
+	type RoutingDecisionRow,
 	setFileOffset,
 	updateToolResults,
 	updateUserMessageLinks,
@@ -49,6 +51,7 @@ import type { SyncWorkerRequest, SyncWorkerResponse } from "./sync-worker";
 import type {
 	BehaviorDashboardStats,
 	DashboardStats,
+	FolderStats,
 	MessageStats,
 	ProviderDashboardStats,
 	RequestDetails,
@@ -578,6 +581,13 @@ export async function getCostDashboardStats(range?: string | null): Promise<Pick
 		costSeries: getCostTimeSeries(costSeriesDays, cutoff),
 	};
 }
+
+export async function getFolderStats(range?: string | null): Promise<FolderStats[]> {
+	await initDb();
+	const { cutoff } = getTimeRangeConfig(range);
+	return getStatsByFolder(cutoff ?? undefined);
+}
+
 export async function getRecentRequests(limit?: number): Promise<MessageStats[]> {
 	await initDb();
 	return dbGetRecentRequests(limit);
@@ -679,7 +689,7 @@ export interface RoutingDashboardStats {
 	}>;
 }
 
-export async function getRoutingDashboardStats(range?: string | null): Promise<RoutingDashboardStats> {
+export async function getRoutingDashboardStats(_range?: string | null): Promise<RoutingDashboardStats> {
 	await syncRoutingQuick();
 	const decisions = getRecentRoutingDecisions(500);
 	const cheap = decisions.filter(d => d.mux_lane === "cheap" || (d.sy_tier === null && d.sy_model === "cheap"));
@@ -693,14 +703,12 @@ export async function getRoutingDashboardStats(range?: string | null): Promise<R
 		cheapCount: cheap.length,
 		capableCount: capable.length,
 		byRoute,
-		recent: decisions
-			.slice(0, 50)
-			.map(d => ({
-				ts: d.ts,
-				route: d.sy_route ?? d.mux_lane ?? null,
-				tier: d.sy_tier ?? null,
-				target: d.sy_model ?? d.mux_target ?? null,
-				reason: d.mux_reason ?? null,
-			})),
+		recent: decisions.slice(0, 50).map(d => ({
+			ts: d.ts,
+			route: d.sy_route ?? d.mux_lane ?? null,
+			tier: d.sy_tier ?? null,
+			target: d.sy_model ?? d.mux_target ?? null,
+			reason: d.mux_reason ?? null,
+		})),
 	};
 }

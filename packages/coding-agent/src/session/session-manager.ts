@@ -76,6 +76,7 @@ import {
 	writeTerminalBreadcrumb,
 } from "./session-paths";
 import { prepareEntryForPersistence } from "./session-persistence";
+import { loadPinnedSessionIds, sortPinnedFirst } from "./session-pins";
 import {
 	FileSessionStorage,
 	MemorySessionStorage,
@@ -88,6 +89,7 @@ import {
 	normalizeSessionWorkspace,
 	normalizeWorkspaceDirectory,
 } from "./session-workspace";
+import { recordSessionTitle } from "./title-index";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
@@ -2106,6 +2108,11 @@ export class SessionManager {
 		this.#index.insert(entry);
 		this.#notifyEntryAppended(entry);
 		await this.#persistTitleChangeEntry(entry, { title, source, updatedAt: timestamp });
+		// Keep the recent-sessions title index current so welcome-screen lookups
+		// never have to content-scan this session's file.
+		if (this.#persist && this.#storage instanceof FileSessionStorage) {
+			recordSessionTitle(this.#sessionId, title);
+		}
 
 		this.#notifySessionNameListeners();
 		return true;
@@ -2193,7 +2200,12 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	appendMuxDecision(lane: "cheap" | "capable" | "fleet" | "ship", target: string, reason: string, traceId?: string): string {
+	appendMuxDecision(
+		lane: "cheap" | "capable" | "fleet" | "ship",
+		target: string,
+		reason: string,
+		traceId?: string,
+	): string {
 		const entry: MuxDecisionEntry = {
 			type: "mux_decision",
 			...this.#freshEntryFields(),
@@ -2261,6 +2273,7 @@ export class SessionManager {
 			fromExtension?: boolean;
 			preserveData?: Record<string, unknown>;
 			method?: CompactionMethod;
+			providerReplayThroughEntryId?: string;
 			tokensAfter?: number;
 		} = {},
 	): string {
@@ -2273,6 +2286,7 @@ export class SessionManager {
 			tokensBefore,
 			tokensAfter: options.tokensAfter,
 			method: options.method,
+			providerReplayThroughEntryId: options.providerReplayThroughEntryId,
 			details: options.details,
 			fromExtension: options.fromExtension,
 			preserveData: options.preserveData,
@@ -2930,12 +2944,14 @@ export class SessionManager {
 		storage: SessionStorage = new FileSessionStorage(),
 	): Promise<SessionInfo[]> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
-		return listSessions(dir, storage);
+		const sessions = await listSessions(dir, storage);
+		return sortPinnedFirst(sessions, await loadPinnedSessionIds());
 	}
 
-	/** List all sessions across all project directories. */
-	static listAll(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
-		return listAllSessions(storage);
+	/** List all sessions across all project directories, pinned sessions first. */
+	static async listAll(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
+		const sessions = await listAllSessions(storage);
+		return sortPinnedFirst(sessions, await loadPinnedSessionIds());
 	}
 }
 

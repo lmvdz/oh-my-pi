@@ -6,8 +6,8 @@ import {
 	Folder,
 	LayoutDashboard,
 	Plug,
-	Smile,
 	Radio,
+	Smile,
 	TrendingUp,
 	Wrench,
 } from "lucide-react";

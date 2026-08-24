@@ -51,7 +51,9 @@ describe("ensureQuotaRouter", () => {
 		let healthy = false;
 		const result = await ensureQuotaRouter(base, {
 			health: async () =>
-				healthy ? { broker: true, gateway: true, switchyard: true } : { broker: true, gateway: false, switchyard: false },
+				healthy
+					? { broker: true, gateway: true, switchyard: true }
+					: { broker: true, gateway: false, switchyard: false },
 			spawnStart: () => {
 				spawned++;
 				healthy = true;

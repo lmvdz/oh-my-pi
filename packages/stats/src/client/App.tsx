@@ -11,8 +11,8 @@ import {
 	OverviewRoute,
 	ProjectsRoute,
 	ProvidersRoute,
-	RoutingRoute,
 	RequestsRoute,
+	RoutingRoute,
 	ToolsRoute,
 } from "./routes";
 import { RequestDrawer } from "./ui/RequestDrawer";

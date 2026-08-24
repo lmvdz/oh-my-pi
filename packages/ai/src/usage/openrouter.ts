@@ -136,16 +136,15 @@ export async function fetchOpenRouterUsage(
 			used: totalUsage,
 			limit: totalCredits,
 			remaining:
-				totalCredits !== undefined && totalUsage !== undefined
-					? Math.max(totalCredits - totalUsage, 0)
-					: undefined,
+				totalCredits !== undefined && totalUsage !== undefined ? Math.max(totalCredits - totalUsage, 0) : undefined,
 		});
 		limits.push({
 			id: OPENROUTER_CREDITS_LIMIT_ID,
 			label: "OpenRouter credits",
 			scope: { provider: OPENROUTER_PROVIDER, windowId: "credits", shared: true },
 			amount,
-			status: amount.remaining !== undefined && amount.remaining <= 0 ? "exhausted" : usageStatus(amount.usedFraction),
+			status:
+				amount.remaining !== undefined && amount.remaining <= 0 ? "exhausted" : usageStatus(amount.usedFraction),
 		});
 	}
 
@@ -162,7 +161,8 @@ export async function fetchOpenRouterUsage(
 			label: "OpenRouter key spend cap",
 			scope: { provider: OPENROUTER_PROVIDER, windowId: "key", shared: false },
 			amount,
-			status: amount.remaining !== undefined && amount.remaining <= 0 ? "exhausted" : usageStatus(amount.usedFraction),
+			status:
+				amount.remaining !== undefined && amount.remaining <= 0 ? "exhausted" : usageStatus(amount.usedFraction),
 		});
 	}
 

@@ -25,7 +25,11 @@ export interface RoutingRouteProps {
 }
 
 export function RoutingRoute({ active, refreshTrigger }: RoutingRouteProps) {
-	const { data: stats, loading, error } = useResource<RoutingStats>(
+	const {
+		data: stats,
+		loading,
+		error,
+	} = useResource<RoutingStats>(
 		["routing", refreshTrigger],
 		async signal => {
 			const response = await fetch("/api/stats/routing", { signal });

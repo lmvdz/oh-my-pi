@@ -21,7 +21,11 @@ function formatTokens(n: number | null | undefined): string {
 const SCANNED_CACHE_PATH = path.join(os.homedir(), ".omp", ".scanned-sessions.json");
 
 async function loadScannedCache(): Promise<Set<string>> {
-	try { return new Set(JSON.parse(await Bun.file(SCANNED_CACHE_PATH).text())); } catch { return new Set(); }
+	try {
+		return new Set(JSON.parse(await Bun.file(SCANNED_CACHE_PATH).text()));
+	} catch {
+		return new Set();
+	}
 }
 async function saveScannedCache(set: Set<string>): Promise<void> {
 	await Bun.write(SCANNED_CACHE_PATH, JSON.stringify([...set]));
@@ -30,21 +34,40 @@ async function saveScannedCache(set: Set<string>): Promise<void> {
 async function syncSessionMuxDecisions(): Promise<void> {
 	const dir = path.join(os.homedir(), ".omp", "agent", "sessions");
 	let entries: Dirent[];
-	try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+	try {
+		entries = await fs.readdir(dir, { withFileTypes: true });
+	} catch {
+		return;
+	}
 	const fullyScanned = await loadScannedCache();
 	const cutoff = Date.now() - 60 * 60 * 1000;
 	const batch: Array<{
-		ts: number; mux_lane: string; mux_target: string; mux_reason: string; mux_success: number;
+		ts: number;
+		mux_lane: string;
+		mux_target: string;
+		mux_reason: string;
+		mux_success: number;
 	}> = [];
 	for (const e of entries) {
 		if (!e.isDirectory()) continue;
 		if (fullyScanned.has(e.name)) continue;
 		const fullPath = path.join(dir, e.name);
 		let stat: Stats;
-		try { stat = await fs.stat(fullPath); } catch { continue; }
-		if (stat.mtimeMs < cutoff) { fullyScanned.add(e.name); continue; }
+		try {
+			stat = await fs.stat(fullPath);
+		} catch {
+			continue;
+		}
+		if (stat.mtimeMs < cutoff) {
+			fullyScanned.add(e.name);
+			continue;
+		}
 		let files: string[];
-		try { files = await fs.readdir(fullPath); } catch { continue; }
+		try {
+			files = await fs.readdir(fullPath);
+		} catch {
+			continue;
+		}
 		for (const f of files) {
 			if (!f.endsWith(".jsonl")) continue;
 			const text = await Bun.file(path.join(fullPath, f)).text();
@@ -54,7 +77,13 @@ async function syncSessionMuxDecisions(): Promise<void> {
 				try {
 					const d = JSON.parse(t);
 					if (d.type === "mux_decision") {
-						batch.push({ ts: new Date(d.timestamp).getTime(), mux_lane: d.lane, mux_target: d.target, mux_reason: d.reason, mux_success: d.success ? 1 : 0 });
+						batch.push({
+							ts: new Date(d.timestamp).getTime(),
+							mux_lane: d.lane,
+							mux_target: d.target,
+							mux_reason: d.reason,
+							mux_success: d.success ? 1 : 0,
+						});
 					}
 				} catch {}
 			}
@@ -102,9 +131,16 @@ export const BUILTIN_FLEET_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 					const args = [script, "--replace"];
 					if (qr.switchyard) args.push("--with-switchyard");
 					if (!qr.broker) args.push("--no-broker-start");
-					args.push("--gateway-bind", qr.gatewayBind, "--switchyard-bind", qr.switchyardBind, "--broker-url", qr.brokerUrl);
+					args.push(
+						"--gateway-bind",
+						qr.gatewayBind,
+						"--switchyard-bind",
+						qr.switchyardBind,
+						"--broker-url",
+						qr.brokerUrl,
+					);
 					const { spawn } = await import("node:child_process");
-					await runtime.output("Starting: " + ["bash", ...args].join(" "));
+					await runtime.output(`Starting: ${["bash", ...args].join(" ")}`);
 					const child = spawn("bash", args, { detached: true, stdio: "ignore", env: process.env, cwd: qr.root });
 					child.unref();
 					// Wait for the gateway to come up
@@ -113,7 +149,10 @@ export const BUILTIN_FLEET_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 					while (Date.now() < deadline) {
 						try {
 							const res = await fetch(`http://${qr.gatewayBind}/healthz`, { signal: AbortSignal.timeout(1000) });
-							if (res.ok) { up = true; break; }
+							if (res.ok) {
+								up = true;
+								break;
+							}
 						} catch {}
 						await Bun.sleep(500);
 					}
@@ -134,7 +173,9 @@ export const BUILTIN_FLEET_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			await initDb();
 			await syncSessionMuxDecisions();
 			const logPath = routingLog ?? path.join(os.homedir(), ".omp", "switchyard-routing.jsonl");
-			try { if (await Bun.file(logPath).exists()) await syncRoutingLog(logPath); } catch {}
+			try {
+				if (await Bun.file(logPath).exists()) await syncRoutingLog(logPath);
+			} catch {}
 
 			const decisions = getRecentRoutingDecisions(limit);
 			const cheap = decisions.filter(d => d.mux_lane === "cheap").length;
@@ -145,8 +186,13 @@ export const BUILTIN_FLEET_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			const cTotal = decisions.reduce((s, d) => s + (d.sy_cached_tokens ?? 0), 0);
 			const oTotal = decisions.reduce((s, d) => s + (d.sy_completion_tokens ?? 0), 0);
 			const tierLabel = syCheap > 0 || syCapable > 0 ? ` · switchyard ${syCheap} cheap / ${syCapable} capable` : "";
-			const tokensStr = pTotal > 0 ? ` · ${formatTokens(pTotal)} in +${formatTokens(cTotal)} cache + ${formatTokens(oTotal)} out` : "";
-			await runtime.output(`Fleet routing · ${decisions.length} recent · mux cheap ${cheap} / capable ${capable}${tierLabel}${tokensStr}`);
+			const tokensStr =
+				pTotal > 0
+					? ` · ${formatTokens(pTotal)} in +${formatTokens(cTotal)} cache + ${formatTokens(oTotal)} out`
+					: "";
+			await runtime.output(
+				`Fleet routing · ${decisions.length} recent · mux cheap ${cheap} / capable ${capable}${tierLabel}${tokensStr}`,
+			);
 
 			for (const d of decisions) {
 				const route = d.mux_lane ?? d.sy_route ?? d.sy_tier ?? "—";
@@ -155,11 +201,15 @@ export const BUILTIN_FLEET_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				const c = formatTokens(d.sy_cached_tokens);
 				const o = formatTokens(d.sy_completion_tokens);
 				const tok = [p, c ? `+${c}` : "", o].filter(Boolean).join(" ");
-				await runtime.output(`${formatTime(d.ts).padEnd(9)} ${(route ?? "—").padEnd(20)} ${(target ?? "—").padEnd(35)} ${tok}`);
+				await runtime.output(
+					`${formatTime(d.ts).padEnd(9)} ${(route ?? "—").padEnd(20)} ${(target ?? "—").padEnd(35)} ${tok}`,
+				);
 			}
 			if (pTotal > 0 || oTotal > 0) {
 				await runtime.output("─".repeat(70));
-				await runtime.output(`${"".padEnd(9)} ${"".padEnd(20)} ${"total".padEnd(35)} ${formatTokens(pTotal)} +${formatTokens(cTotal)} ${formatTokens(oTotal)}`);
+				await runtime.output(
+					`${"".padEnd(9)} ${"".padEnd(20)} ${"total".padEnd(35)} ${formatTokens(pTotal)} +${formatTokens(cTotal)} ${formatTokens(oTotal)}`,
+				);
 			}
 
 			closeDb();

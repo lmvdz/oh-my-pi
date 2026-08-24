@@ -1,11 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
 import { ProviderHttpError } from "../src/error/classes";
-import {
-	OPENROUTER_CREDITS_LIMIT_ID,
-	OPENROUTER_KEY_LIMIT_ID,
-	openrouterUsageProvider,
-} from "../src/usage/openrouter";
+import { OPENROUTER_CREDITS_LIMIT_ID, OPENROUTER_KEY_LIMIT_ID, openrouterUsageProvider } from "../src/usage/openrouter";
 
 function fakeFetch(routes: Record<string, { status?: number; body: unknown }>): FetchImpl {
 	const fn = async (input: string | URL | Request) => {
